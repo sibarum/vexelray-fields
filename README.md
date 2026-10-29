@@ -72,17 +72,24 @@ the plane's where the ray crosses it, and whichever comes first is the collision
 granular material is met more the further a ray goes through it; the plane's chance is per crossing because a surface
 is met once by any ray that crosses it, at any angle.
 
-All of that is derived from moments the cell keeps underneath: how much of it is solid, its surface area, the
-area-weighted mean of the surface's normals, where the surface sits along that mean and how far it strays, the share
-of each material, and the mean and variance of any continuous attributes. Moments average exactly, which distances do
-not, so `coarser()` combines eight cells into one (four in 2D) by moments, never by resampling: volume, area and
-material shares are kept exactly, and detail lost to distance turns into granularity. A sphere of radius 3 baked in
-cells of 0.25:
+All of that is derived from moments the cell keeps underneath: how much of it is solid, and the centroid and spread
+of that solid; its surface area, the area-weighted mean of the surface's normals, where the surface sits along that
+mean and how far it strays; the share of each material, and the mean and variance of any continuous attributes.
+Moments average exactly, which distances do not, so `coarser()` combines eight cells into one (four in 2D) by
+moments, never by resampling: volume, area, material shares and the solid's centroid are kept exactly, and detail lost
+to distance turns into granularity.
+
+The granular share is grains of solid, as stochastic geometry's Boolean model has them. A ray from the free space
+between grains enters one at a rate of `S/4 ÷ (1 − occupancy)` per unit distance in 3D (`S/π ÷ (1 − occupancy)` in
+2D), so a mostly solid cell stops a ray almost at once. That rate is spread over the cell as a Gaussian at the solid's
+centroid with the solid's spread, so a ray through a coarse ball meets it and one past its edge does not.
+
+A sphere of radius 3, baked in cells of 0.25 and coarsened, with a ray through its middle:
 
 ```
-cell 0.25: mean granularity 0.015    cell 2.00: mean granularity 0.149
-cell 0.50: mean granularity 0.034    cell 4.00: mean granularity 0.350
-cell 1.00: mean granularity 0.077    cell 8.00: mean granularity 1.000 (one cell: a small cloud)
+cell 0.25: mean granularity 0.015, stopped 1.000    cell 2.00: mean granularity 0.149, stopped 0.978
+cell 0.50: mean granularity 0.034, stopped 1.000    cell 4.00: mean granularity 0.350, stopped 0.855
+cell 1.00: mean granularity 0.077, stopped 1.000    cell 8.00: mean granularity 1.000, stopped 0.949 (one cell)
 ```
 
 Two ways to ask a ray. `trace` gives the expected outcome, the chance of a collision in each cell. `collide` gives one
@@ -91,8 +98,10 @@ what is being decided, so the outcome holds still from frame to frame while the 
 the cell: a half-covered cell is wholly there or wholly not, from one bucket. Averaged over seeds, `collide` agrees
 with `trace` (`hashedCollisionsAverageToTheExpectedOutcome`).
 
-Known: a granular cell treats its surface as independent pieces, so a solid object seen coarsely turns see-through:
-the sphere above, as its one cell, stops a ray through its middle with a chance of 0.59, not 1. The cell's occupancy
-says it is solid; using that is the next question.
+Known:
+* A cell's flat share is one mean plane. A cell holding a curved piece (each cell at size 4 above holds one octant's
+  cap) can be crossed through its solid by a ray that misses the plane inside the cell, which is the 0.855.
+* The Gaussian's tails past the cell's walls are lost, so a cell whose solid is spread wide undercounts its rate.
+* The rate's free share is the cell's average occupancy, not the occupancy where the ray is.
 
 Experimental: the cell's layout, the derivation and the bake are expected to change.

@@ -92,7 +92,20 @@ class VexelFieldTest {
         assertEquals(1, top.sizeX());
         Vexel v = top.vexel(0, 0, 0);
         assertEquals(1, v.granularity(), 0.02);
-        assertEquals(0.5 * area / 512, v.rate(), 0.03 * v.rate());
+        // grains entered from the free space between them: a quarter of the Crofton count, over the free share
+        assertEquals(area / 512 / 4 / (1 - volume / 512), v.rate(), 0.03 * v.rate());
+        // and where the solid is: the ball's centroid, and its mean squared radius, 3/5 r²
+        assertEquals(0, v.solidCentroid().length(), 0.02);
+        assertEquals(0.6 * r * r, v.solidSpread(), 0.03 * 0.6 * r * r);
+    }
+
+    @Test
+    void aCellKnowsWhereItsSolidIs() {
+        Vexel v = floor().vexel(1, 2, 1);   // solid from z 1 to 1.3 of a cell from 1 to 2
+        assertEquals(-0.35, v.solidCentroid().z(), 1e-3);
+        assertEquals(0, v.solidCentroid().x(), 1e-6);
+        assertEquals(2 / 12.0 + 0.09 / 12, v.solidSpread(), 1e-3);
+        assertEquals(0, floor().vexel(1, 2, 3).occupancy(), 1e-9);
     }
 
     /** The area-weighted mean granularity of the cells with surface. */
@@ -110,12 +123,22 @@ class VexelFieldTest {
         return sum / weight;
     }
 
+    /** The sphere as one granular cell is still solid where the sphere is, and empty past it. */
     @Test
-    void aGranularCellStopsARayByItsRateWithNoNormal() {
+    void aCoarseSolidStopsRaysThroughItAndNotPastIt() {
         VexelField cloud = sphere().coarser().coarser().coarser().coarser();
-        Vexel v = cloud.vexel(0, 0, 0);
-        double p = cloud.trace(new Vec3(4, 4, -1), UP).probability();
-        assertEquals(1 - Math.exp(-v.rate() * 8), p, v.coverage() + 1e-6);
+        assertEquals(1, cloud.sizeX());
+        assertEquals(1, cloud.vexel(0, 0, 0).granularity(), 0.02);
+        double middle = cloud.trace(new Vec3(4, 4, -1), UP).probability();
+        double past = cloud.trace(new Vec3(0.5, 0.5, -1), UP).probability();   // 4.9 from the axis: misses
+        assertTrue(middle > 0.9, "through the middle: " + middle);
+        assertTrue(past < 0.02, "past the edge: " + past);
+        assertEquals(4, cloud.trace(new Vec3(4, 4, -1), UP).expectedDistance(), 1.0);
+    }
+
+    @Test
+    void aGranularCellStopsARayWithNoNormal() {
+        VexelField cloud = sphere().coarser().coarser().coarser().coarser();
         int granular = 0, hits = 0;
         for (long seed = 0; seed < 400; seed++) {
             Collision c = cloud.collide(new Vec3(4, 4, -1), UP, Double.POSITIVE_INFINITY, new VexelHash(seed, 16));

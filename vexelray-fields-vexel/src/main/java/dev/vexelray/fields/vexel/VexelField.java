@@ -40,9 +40,11 @@ import java.util.stream.IntStream;
 public final class VexelField {
 
     /** The moments: what is kept, baked and combined. */
-    private static final int OCC = 0, AREA = 1, NX = 2, NY = 3, NZ = 4, H_MEAN = 5, H_VAR = 6, MAT = 7;
+    private static final int OCC = 0, AREA = 1, NX = 2, NY = 3, NZ = 4, H_MEAN = 5, H_VAR = 6,
+            SX = 7, SY = 8, SZ = 9, S_VAR = 10, MAT = 11;
     /** What is derived from them, per cell. */
-    private static final int RATE = 0, COVER = 1, GRAN = 2, PX = 3, PY = 4, PZ = 5, PH = 6, DERIVED = 7;
+    private static final int RATE = 0, COVER = 1, GRAN = 2, PX = 3, PY = 4, PZ = 5, PH = 6, GX = 7, GY = 8, GZ = 9,
+            G_VAR = 10, DERIVED = 11;
 
     private final int dims;
     private final Vec3 origin;
@@ -147,8 +149,8 @@ public final class VexelField {
         return new Vexel(derived[k + GRAN], derived[k + RATE], derived[k + COVER],
                 new Vec3(derived[k + PX], derived[k + PY], derived[k + PZ]), derived[k + PH],
                 Arrays.copyOfRange(data, i + MAT, i + MAT + materials),
-                data[i + OCC], data[i + AREA], new Vec3(data[i + NX], data[i + NY], data[i + NZ]), data[i + H_VAR],
-                mean, var);
+                data[i + OCC], new Vec3(data[i + SX], data[i + SY], data[i + SZ]), data[i + S_VAR],
+                data[i + AREA], new Vec3(data[i + NX], data[i + NY], data[i + NZ]), data[i + H_VAR], mean, var);
     }
 
     /** The solid volume the field holds (area, in 2D). */
@@ -171,6 +173,13 @@ public final class VexelField {
 
     private int cellIndex(int x, int y, int z) {
         return (z * ny + y) * nx + x;
+    }
+
+    /** The world position of cell {@code c}'s solid centroid. */
+    private Vec3 solidCentroid(int c) {
+        int i = c * stride;
+        return centre(c % nx, (c / nx) % ny, c / (nx * ny))
+                .plus(new Vec3(data[i + SX], data[i + SY], data[i + SZ]));
     }
 
     // ---- baking
@@ -201,6 +210,9 @@ public final class VexelField {
         double x0 = origin.x() + cx * cell, y0 = origin.y() + cy * cell, z0 = origin.z() + cz * cell;
         int kFrom = dims == 3 ? -1 : 0, kTo = dims == 3 ? s : 0;
         double inside = 0;
+        Vec3 solidSum = Vec3.ZERO;
+        double solidSquares = 0;
+        Vec3 c = centre(cx, cy, cz);
         List<Sample> band = new ArrayList<>();
         for (int k = kFrom; k <= kTo; k++) {
             double z = dims == 3 ? z0 + (k + 0.5) * h : 0;
@@ -209,12 +221,20 @@ public final class VexelField {
                 for (int i = -1; i <= s; i++) {
                     double x = x0 + (i + 0.5) * h;
                     double d = solid.distance(x, y, z);
+                    Vec3 n = Math.abs(d) < h ? gradient(solid, x, y, z, h * 0.25).times(-1).normalize() : Vec3.ZERO;
                     boolean own = i >= 0 && i < s && j >= 0 && j < s && (dims == 2 || (k >= 0 && k < s));
                     if (own) {
-                        inside += Math.clamp(0.5 + d / h, 0, 1);   // the share of the sample's slab that is solid
+                        double w = Math.clamp(0.5 + d / h, 0, 1);   // the share of the sample's slab that is solid
+                        if (w > 0) {
+                            // a slab cut by the surface: its solid part sits on the inside, (1 - w) h / 2 off centre,
+                            // and is w h deep along the normal, h across it; exact for a flat surface
+                            Vec3 r = new Vec3(x, y, z).minus(c).minus(n.times((1 - w) * h / 2));
+                            inside += w;
+                            solidSum = solidSum.plus(r.times(w));
+                            solidSquares += w * (r.dot(r) + ((dims - 1) + w * w) * h * h / 12);
+                        }
                     }
                     if (Math.abs(d) < h) {
-                        Vec3 n = gradient(solid, x, y, z, h * 0.25).times(-1).normalize();
                         Vec3 foot = new Vec3(x, y, z).plus(n.times(d));
                         if (n != Vec3.ZERO && within(foot.x(), x0) && within(foot.y(), y0)
                                 && (dims == 2 || within(foot.z(), z0))) {
@@ -226,6 +246,10 @@ public final class VexelField {
         }
         int i = cellIndex(cx, cy, cz) * stride;
         data[i + OCC] = (float) (inside / (s * s * (dims == 3 ? s : 1)));
+        if (inside > 0) {
+            Vec3 centroid = solidSum.times(1 / inside);
+            storeSolid(i, centroid, solidSquares / inside - centroid.dot(centroid));
+        }
         double area = 0;
         Vec3 nsum = Vec3.ZERO;
         for (Sample b : band) {
@@ -237,7 +261,6 @@ public final class VexelField {
         }
         Vec3 mean = nsum.times(1 / area);
         Vec3 axis = mean.normalize();
-        Vec3 c = centre(cx, cy, cz);
         double hm = 0, h2 = 0;
         double[] mat = new double[materials];
         double[] am = new double[attributes], a2 = new double[attributes];
@@ -268,6 +291,14 @@ public final class VexelField {
         return new Vec3(gx, gy, gz).times(1 / (2 * e));
     }
 
+    /** Write where a cell's solid is: its centroid from the cell's centre, and its mean squared distance from that. */
+    private void storeSolid(int i, Vec3 centroid, double spread) {
+        data[i + SX] = (float) centroid.x();
+        data[i + SY] = (float) centroid.y();
+        data[i + SZ] = (float) centroid.z();
+        data[i + S_VAR] = (float) Math.max(0, spread);
+    }
+
     /** Write a cell's surface moments, the weighted sums divided by {@code weight}. */
     private void store(int i, double density, Vec3 mean, double hm, double hv, double[] mat, double[] am,
                        double[] a2, double weight) {
@@ -292,8 +323,15 @@ public final class VexelField {
      * A cell's granularity, rate, coverage and plane, from its moments. The flat share is the coherence of its
      * surface: the mean normal's length, less as the offsets spread, reaching nothing when they are as spread as a
      * uniform scatter across the cell. Its area over the area of the mean plane's slice of the cell is the plane's
-     * coverage; the granular share's area, by the Crofton formula, is its rate ({@code 1/2} a collision per unit area
-     * per unit volume per unit distance in 3D, {@code 2/π} in 2D, for surface facing every way).
+     * coverage.
+     *
+     * <p>The granular share is taken as grains of solid scattered as a Boolean model: a ray coming from the empty
+     * space between them enters one at a rate of {@code S/4 ÷ (1 - occupancy)} per unit distance in 3D
+     * ({@code S/π ÷ (1 - occupancy)} in 2D), {@code S} the granular surface density. A quarter of the Crofton
+     * crossings, because half of all crossings are exits and the rest are spread over every angle; divided by the free
+     * share because a ray is only ever in the free space between grains until it hits. So a cell mostly solid stops a
+     * ray almost at once. That rate is the cell's average: where in the cell the grains are is the solid's centroid
+     * and spread, and {@link #depth} spreads the rate as a Gaussian there.
      */
     private void derive(int c) {
         int i = c * stride, k = c * DERIVED;
@@ -314,7 +352,12 @@ public final class VexelField {
             coherence = 0;   // a mean plane that misses the cell is no plane
         }
         double granularity = 1 - coherence;
-        derived[k + RATE] = (float) (granularity * s * (dims == 3 ? 0.5 : 2 / Math.PI));
+        double free = Math.max(1e-3, 1 - data[i + OCC]);
+        derived[k + RATE] = (float) (granularity * s * (dims == 3 ? 0.25 : 1 / Math.PI) / free);
+        derived[k + GX] = data[i + SX];
+        derived[k + GY] = data[i + SY];
+        derived[k + GZ] = data[i + SZ];
+        derived[k + G_VAR] = data[i + OCC] > 0 ? data[i + S_VAR] / dims : 0;
         derived[k + COVER] = (float) coverage;
         derived[k + GRAN] = (float) granularity;
         derived[k + PX] = (float) axis.x();
@@ -430,12 +473,28 @@ public final class VexelField {
             nsum = nsum.plus(new Vec3(f.data[i + NX], f.data[i + NY], f.data[i + NZ]).times(a));
         }
         data[o + OCC] = (float) (occ / children);
+        Vec3 c = centre(x, y, z);
+        if (occ > 0) {
+            // the solid's centroid and spread, by the parallel-axis rule over the children's
+            Vec3 sum = Vec3.ZERO;
+            for (int k : kids) {
+                int i = k * f.stride;
+                sum = sum.plus(f.solidCentroid(k).times(f.data[i + OCC]));
+            }
+            Vec3 centroid = sum.times(1 / occ);
+            double spread = 0;
+            for (int k : kids) {
+                int i = k * f.stride;
+                Vec3 off = f.solidCentroid(k).minus(centroid);
+                spread += f.data[i + OCC] * (f.data[i + S_VAR] + off.dot(off));
+            }
+            storeSolid(o, centroid.minus(c), spread / occ);
+        }
         if (area == 0) {
             return;
         }
         Vec3 mean = nsum.times(1 / area);
         Vec3 axis = mean.normalize();
-        Vec3 c = centre(x, y, z);
         double hm = 0, h2 = 0;
         double[] mat = new double[materials];
         double[] am = new double[attributes], a2 = new double[attributes];
@@ -499,16 +558,13 @@ public final class VexelField {
         double[] through = {1};
         walk(from, d, tMax, (x, y, z, t, exit) -> {
             int c = cellIndex(x, y, z), k = c * DERIVED;
-            double rate = derived[k + RATE];
             double plane = crossing(c, x, y, z, from, d, t, exit);
             double flat = Double.isNaN(plane) ? 0 : derived[k + COVER];
-            double length = exit - t;
-            double granular = 1 - Math.exp(-rate * length);
+            double granular = 1 - Math.exp(-depth(c, x, y, z, from, d, t, exit));
             double p = 1 - (1 - flat) * (1 - granular);
             if (p > 0) {
-                double meanGranular = rate * length < 1e-6 ? length / 2
-                        : 1 / rate - length * Math.exp(-rate * length) / (1 - Math.exp(-rate * length));
-                double th = (flat * (Double.isNaN(plane) ? 0 : plane) + granular * (t + meanGranular))
+                double th = (flat * (Double.isNaN(plane) ? 0 : plane)
+                        + (granular > 0 ? granular * meanStop(c, x, y, z, from, d, t, exit, granular) : 0))
                         / (flat + granular);
                 int i = c * stride;
                 hits.add(new RayHits.Hit(through[0] * p, th, from.plus(d.times(th)), planeNormal(k),
@@ -537,10 +593,20 @@ public final class VexelField {
             if (!Double.isNaN(plane) && hash.u(x, y, z, bucket, VexelHash.FLAT) < derived[k + COVER]) {
                 best = plane;
             }
-            double rate = derived[k + RATE];
-            if (rate > 0) {
-                double tg = t - Math.log(1 - hash.u(x, y, z, bucket, VexelHash.GRANULAR)) / rate;
-                if (tg < exit && tg < best) {
+            double target = -Math.log(1 - hash.u(x, y, z, bucket, VexelHash.GRANULAR));
+            if (depth(c, x, y, z, from, d, t, exit) > target) {
+                // where the expected count of collisions since entering reaches the drawn one: monotone, so bisect
+                double lo = t, hi = exit;
+                for (int i = 0; i < 48; i++) {
+                    double mid = 0.5 * (lo + hi);
+                    if (depth(c, x, y, z, from, d, t, mid) < target) {
+                        lo = mid;
+                    } else {
+                        hi = mid;
+                    }
+                }
+                double tg = 0.5 * (lo + hi);
+                if (tg < best) {
                     best = tg;
                     granular = true;
                 }
@@ -576,6 +642,54 @@ public final class VexelField {
             return Double.NaN;
         }
         return in == out ? 0.5 * (t + exit) : Math.clamp(t + (exit - t) * in / (in - out), t, exit);
+    }
+
+    /**
+     * The expected number of collisions with cell {@code c}'s granular share along the ray from {@code a} to
+     * {@code b}: its rate spread over the cell as an isotropic Gaussian at the solid's centroid, of the solid's
+     * spread, so a ray through the middle of a ball meets more of it than one past its edge, the cell's total kept.
+     * In closed form: across the ray the Gaussian is a constant, along it a difference of normal distributions. A cell
+     * with no solid, only surface, has its rate spread evenly. The Gaussian's tails past the cell's walls are lost,
+     * which a cell whose solid is spread wide undercounts.
+     */
+    private double depth(int c, int x, int y, int z, Vec3 from, Vec3 d, double a, double b) {
+        int k = c * DERIVED;
+        double rate = derived[k + RATE];
+        double v = derived[k + G_VAR];
+        if (rate == 0 || b <= a) {
+            return 0;
+        }
+        if (v <= 1e-12 * cell * cell) {
+            return rate * (b - a);
+        }
+        Vec3 w = centre(x, y, z).plus(new Vec3(derived[k + GX], derived[k + GY], derived[k + GZ])).minus(from);
+        double tc = w.dot(d);
+        double across = Math.max(0, w.dot(w) - tc * tc);
+        double s = Math.sqrt(v);
+        double density = Math.pow(2 * Math.PI * v, -(dims - 1) / 2.0) * Math.exp(-across / (2 * v));
+        return rate * Math.pow(cell, dims) * density * (phi((b - tc) / s) - phi((a - tc) / s));
+    }
+
+    /** The expected distance of the granular share's stop, given one between {@code a} and {@code b}, by Simpson. */
+    private double meanStop(int c, int x, int y, int z, Vec3 from, Vec3 d, double a, double b, double stopped) {
+        int n = 32;
+        double h = (b - a) / n;
+        double end = 1 - stopped;
+        double sum = 0;
+        for (int i = 0; i <= n; i++) {
+            double survive = Math.exp(-depth(c, x, y, z, from, d, a, a + i * h)) - end;
+            sum += survive * (i == 0 || i == n ? 1 : i % 2 == 1 ? 4 : 2);
+        }
+        return a + sum * h / 3 / stopped;
+    }
+
+    /** The standard normal distribution function, by Abramowitz and Stegun 7.1.26: within 1.5e-7. */
+    private static double phi(double x) {
+        double z = Math.abs(x) / Math.sqrt(2);
+        double k = 1 / (1 + 0.3275911 * z);
+        double erf = 1 - k * (0.254829592 + k * (-0.284496736 + k * (1.421413741 + k * (-1.453152027
+                + k * 1.061405429)))) * Math.exp(-z * z);
+        return 0.5 * (1 + (x < 0 ? -erf : erf));
     }
 
     /** The material whose share of the cell at {@code i} the value {@code u} falls in. */
