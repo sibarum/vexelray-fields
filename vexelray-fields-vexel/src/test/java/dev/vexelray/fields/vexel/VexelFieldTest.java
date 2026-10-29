@@ -32,7 +32,7 @@ class VexelFieldTest {
         Vexel v = f.vexel(1, 2, 1);
         assertEquals(0, v.granularity(), 1e-6);
         assertEquals(0, v.rate(), 1e-6);
-        assertEquals(1, v.coverage(), 1e-3);
+        assertNull(v.footprint(), "the floor spans its cell: its whole slice is the face of its solid");
         assertEquals(1, v.normal().z(), 1e-6);
         assertEquals(-0.2, v.offset(), 1e-3);
         assertEquals(1, v.materials()[0], 1e-6);
@@ -65,7 +65,7 @@ class VexelFieldTest {
         // z < 2 exactly: the surface lies on the face between layers 1 and 2
         VexelField f = VexelField.bake(Solid.halfSpace(new Vec3(0, 0, 2), UP), Vec3.ZERO, 1, 2, 2, 4, 8);
         assertEquals(0, f.vexel(0, 0, 1).surfaceDensity(), 1e-9);
-        assertEquals(1, f.vexel(0, 0, 2).coverage(), 1e-3);
+        assertNull(f.vexel(0, 0, 2).footprint());
         assertEquals(1, f.trace(new Vec3(0.5, 0.5, 3.9), DOWN).probability(), 1e-3);
     }
 
@@ -124,13 +124,32 @@ class VexelFieldTest {
                 for (double[] at : new double[][]{{x, y}, {x + 0.25, y}, {x, y + 0.25}}) {
                     double p = f.trace(new Vec3(at[0], at[1], 4.5), DOWN).probability();
                     if (2 - (tilt.x() * (at[0] - 2) + tilt.y() * (at[1] - 2)) / tilt.z() > 0.1) {   // plane above z 0.1
-                        // not quite 1: the bake measures a plane's area up to 0.7% short of its slice, which makes
-                        // a cell a screen door of 0.993; a crack would let far more through
-                        assertTrue(p > 0.99, "a ray down at " + at[0] + ", " + at[1] + ": " + p);
+                        assertEquals(1, p, 1e-9, "a ray down at " + at[0] + ", " + at[1]);   // solid: no pinholes
                     }
                 }
             }
         }
+    }
+
+    /** A surface is the face of solid: a ray is stopped where it enters the solid, never where it leaves. */
+    @Test
+    void aRayLeavingSolidIsNotStopped() {
+        // up out of the floor, from inside it
+        assertEquals(0, floor().trace(new Vec3(2.2, 2.7, 0.5), UP).probability(), 1e-6);
+        assertNull(floor().collide(new Vec3(2.2, 2.7, 0.5), UP, Double.POSITIVE_INFINITY, HASH));
+        // out of the sphere from its centre, every way, at the levels where its cells are still mostly flat
+        VexelField f = VexelField.bake(Solid.sphere(new Vec3(4, 4, 4), 3), Vec3.ZERO, 0.25, 32, 32, 32, 6);
+        for (int level = 0; level < 3; level++) {
+            for (Vec3 d : new Vec3[]{UP, DOWN, new Vec3(1, 0, 0), new Vec3(1, -1, 0.5), new Vec3(-0.3, 0.8, -0.6)}) {
+                double p = f.trace(new Vec3(4.01, 3.98, 4.03), d).probability();
+                assertEquals(0, p, 1e-6, "cell " + f.cellSize() + ", out along " + d);
+            }
+            f = f.coarser();
+        }
+        // and a ray through the sphere stops once, on the near side, not again on the far side
+        RayHits through = sphere().trace(new Vec3(4.1, 3.9, -1), UP);
+        assertEquals(1, through.probability(), 1e-9);
+        assertTrue(through.hits().stream().allMatch(h -> h.point().z() < 4), "only the near face: " + through.hits());
     }
 
     /** A turned cube, coarsened: its faces' caps meet at edges, and the plane's footprint keeps rays past them. */
@@ -160,8 +179,10 @@ class VexelFieldTest {
                 }
             }
         }
-        assertTrue(in / ni > 0.97, "inside " + in / ni);
-        assertTrue(out / no < 0.12, "outside " + out / no + "; 0.170 before footprints");
+        // the corner prisms are solid: rays entering their sides are stopped. Inside went 0.976 -> 0.994 for it, and
+        // outside 0.099 -> 0.124: a prism is a rough shape for three faces meeting at a corner
+        assertTrue(in / ni > 0.99, "inside " + in / ni);
+        assertTrue(out / no < 0.13, "outside " + out / no + "; 0.170 before footprints");
     }
 
     /** The area-weighted mean granularity of the cells with surface. */
@@ -218,7 +239,7 @@ class VexelFieldTest {
                     }
                 }
             }
-            assertTrue(in / ni > 0.97, "cell " + f.cellSize() + ": inside the outline " + in / ni);
+            assertTrue(in / ni > 0.99, "cell " + f.cellSize() + ": inside the outline " + in / ni);
             assertTrue(out / no < leak[level], "cell " + f.cellSize() + ": outside the outline " + out / no);
             if (level < leak.length - 1) {
                 f = f.coarser();

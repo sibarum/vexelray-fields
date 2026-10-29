@@ -6,9 +6,10 @@ package dev.vexelray.fields.vexel;
  * bucket always gives the same answer, so an image is stable from frame to frame and from pixel to pixel; the
  * answer changes only as the view crosses into another bucket, or the seed is moved on.
  *
- * <p>The grain is the cell: every ray through a cell in one bucket shares its outcome, so a cell of half coverage is
- * wholly there or wholly not, from that direction. Averaging seeds (over frames, say) recovers the expected value
- * {@link VexelField#trace} gives.
+ * <p>The grain is the cell: every ray through a cell in one bucket shares its outcome, so a cell whose granular
+ * share stops a ray half the time is wholly there or wholly not, from that direction. Averaging seeds (over frames,
+ * say) recovers the expected value {@link VexelField#trace} gives. A cell's flat share draws nothing: it is solid,
+ * and stops every ray that enters it.
  *
  * @param seed  moves every outcome at once; a renderer accumulating frames advances it
  * @param steps angle buckets a side: of the octahedral map of directions in 3D ({@code steps²} buckets), of the
@@ -17,7 +18,7 @@ package dev.vexelray.fields.vexel;
 public record VexelHash(long seed, int steps) {
 
     /** What an outcome decides; each draws its own value. */
-    static final int FLAT = 0, GRANULAR = 1, MATERIAL = 2, SOLID = 3, KIND = 4;
+    static final int GRANULAR = 1, MATERIAL = 2, SOLID = 3, KIND = 4;
 
     public VexelHash {
         if (steps <= 0) {

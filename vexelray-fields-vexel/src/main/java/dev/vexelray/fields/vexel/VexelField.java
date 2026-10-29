@@ -14,14 +14,17 @@ import java.util.stream.IntStream;
  *   <li>the probability of each material, given a collision;</li>
  *   <li>a granularity: {@code 1} is smoke, material building up over distance with no particular normal; {@code 0}
  *       is a surface, where the collision happens at one point with one normal. Between, the cell is both: its
- *       granular share collides at a rate, and its flat share is a plane that stops a ray crossing it with a
- *       coverage.</li>
+ *       granular share collides at a rate, and its flat share is solid behind a plane.</li>
  * </ul>
  *
+ * <p>A field describes solid, never sheets. A surface is the face of solid: the flat share is the half-space behind
+ * its plane, within the footprint where the cell's surface lies, and a ray is stopped where it enters that solid,
+ * at any angle, and never where it leaves. The granular share is grains of solid.
+ *
  * <p>The two shares compete: along a ray through a cell, the granular share's collision falls where an exponential
- * of its rate puts it, the plane's where the ray crosses it, and whichever comes first is the collision. The rate
- * is a rate per distance because granular material is met more the further a ray goes through it; the flat share
- * is a chance per crossing because a surface is met once by any ray that crosses it, at any angle.
+ * of its rate puts it, the flat share's where the ray enters behind the plane, and whichever comes first is the
+ * collision. The rate is a rate per distance because granular material is met more the further a ray goes through
+ * it; the flat share is met once, where the ray enters it.
  *
  * <p>Underneath, a cell keeps the moments of what it holds — how much of it is solid, how much surface, the
  * area-weighted mean of the surface's normals, where it sits along that mean and how far it strays, the share of
@@ -45,9 +48,9 @@ public final class VexelField {
     /** The order a covariance's six terms are kept in, after {@link #F_COV}. */
     private static final int[][] COV = {{0, 3, 4}, {3, 1, 5}, {4, 5, 2}};
     /** What is derived from them, per cell. */
-    private static final int RATE = 0, COVER = 1, GRAN = 2, PX = 3, PY = 4, PZ = 5, PH = 6, GX = 7, GY = 8, GZ = 9,
+    private static final int RATE = 0, HALF = 1, GRAN = 2, PX = 3, PY = 4, PZ = 5, PH = 6, GX = 7, GY = 8, GZ = 9,
             G_VAR = 10, BALL = 11, FILL = 12, BX = 13, BY = 14, BZ = 15, UX = 16, UY = 17, UZ = 18, W1 = 19, W2 = 20,
-            DERIVED = 21;
+            DEPTH = 21, DERIVED = 22;
 
     private final int dims;
     private final Vec3 origin;
@@ -152,7 +155,7 @@ public final class VexelField {
         Vexel.Footprint footprint = derived[k + W1] < 0 ? null : new Vexel.Footprint(
                 new Vec3(derived[k + BX], derived[k + BY], derived[k + BZ]),
                 new Vec3(derived[k + UX], derived[k + UY], derived[k + UZ]), derived[k + W1], derived[k + W2]);
-        return new Vexel(derived[k + GRAN], derived[k + RATE], derived[k + COVER],
+        return new Vexel(derived[k + GRAN], derived[k + RATE],
                 new Vec3(derived[k + PX], derived[k + PY], derived[k + PZ]), derived[k + PH], footprint,
                 Arrays.copyOfRange(data, i + MAT, i + MAT + materials),
                 data[i + OCC], new Vec3(data[i + SX], data[i + SY], data[i + SZ]), data[i + S_VAR], derived[k + FILL],
@@ -361,10 +364,10 @@ public final class VexelField {
     // ---- what a renderer reads
 
     /**
-     * A cell's granularity, rate, coverage and plane, from its moments. The flat share is the coherence of its
-     * surface: the mean normal's length, less as the offsets spread, reaching nothing when they are as spread as a
-     * uniform scatter across the cell. Its area over the area of the mean plane's slice of the cell is the plane's
-     * coverage.
+     * A cell's granularity, rate and flat share, from its moments. The flat share is the coherence of its surface:
+     * the mean normal's length, less as the offsets spread, reaching nothing when they are as spread as a uniform
+     * scatter across the cell. It is solid, never a sheet: the half-space behind the mean plane, within the
+     * {@linkplain #footprint footprint} where the surface lies.
      *
      * <p>The granular share is taken as grains of solid scattered as a Boolean model: a ray coming from the empty
      * space between them enters one at a rate of {@code S/4 ÷ (1 - occupancy)} per unit distance in 3D
@@ -380,7 +383,7 @@ public final class VexelField {
     private void derive(int c) {
         int i = c * stride, k = c * DERIVED;
         Arrays.fill(derived, k, k + DERIVED, 0f);
-        derived[k + W1] = -1;   // no footprint: the coverage, if any, is the slice's
+        derived[k + W1] = -1;   // no footprint: the half-space, if any, fills the slice
         double s = data[i + AREA];
         if (s == 0) {
             return;
@@ -390,11 +393,8 @@ public final class VexelField {
         double spread = Math.sqrt(data[i + H_VAR]) / (cell / Math.sqrt(12));
         double coherence = mean.length() * Math.max(0, 1 - spread);
         double slice = axis == Vec3.ZERO ? 0 : sliceArea(axis, data[i + H_MEAN]);
-        double coverage = 0;
-        if (slice > 1e-9 * Math.pow(cell, dims - 1)) {
-            coverage = Math.min(1, coherence * s * Math.pow(cell, dims) / slice);
-        } else {
-            coherence = 0;   // a mean plane that misses the cell is no plane
+        if (slice <= 1e-9 * Math.pow(cell, dims - 1)) {
+            coherence = 0;   // a mean plane that misses the cell bounds no solid in it
         }
         double granularity = 1 - coherence;
         double free = Math.max(1e-3, 1 - data[i + OCC]);
@@ -412,11 +412,11 @@ public final class VexelField {
             derived[k + FILL] = ballVolume > 0
                     ? (float) Math.min(1, data[i + OCC] * Math.pow(cell, dims) / ballVolume) : 0;
         }
-        if (coverage > 0) {
-            footprint(i, k, axis, coherence * s * Math.pow(cell, dims), slice);
-            coverage = derived[k + COVER];
+        if (coherence > 0) {
+            derived[k + HALF] = 1;
+            double volume = Math.pow(cell, dims);
+            footprint(i, k, axis, coherence * s * volume, coherence * data[i + OCC] * volume, slice);
         }
-        derived[k + COVER] = (float) coverage;
         derived[k + GRAN] = (float) granularity;
         derived[k + PX] = (float) axis.x();
         derived[k + PY] = (float) axis.y();
@@ -437,10 +437,11 @@ public final class VexelField {
      * centred on the centroid's foot on the plane, along the principal axes of the covariance projected into the
      * plane, each half-width {@code √(3 · variance)}, the box a uniform rectangle's moments give back exactly. Grown
      * until, within the plane's slice of the cell, it holds the flat area; taken as the whole slice once it holds
-     * {@link #SPANS} of it. The coverage within it is the flat area over the area it holds, so the area covered is
-     * kept. Writes the box and the coverage into {@code derived}; no box ({@code W1} negative) means the slice.
+     * {@link #SPANS} of it. Behind the plane, within the box, is solid: the box's area is the flat area, so stopping
+     * every ray that enters there keeps the surface the cell holds. Writes the box into {@code derived}; no box
+     * ({@code W1} negative) means the whole slice.
      */
-    private void footprint(int i, int k, Vec3 n, double flatArea, double slice) {
+    private void footprint(int i, int k, Vec3 n, double flatArea, double flatVolume, double slice) {
         Vec3 m = new Vec3(data[i + FX], data[i + FY], data[i + FZ]);
         Vec3 b = m.minus(n.times(n.dot(m) - data[i + H_MEAN]));
         Vec3 t1 = dims == 2 ? new Vec3(-n.y(), n.x(), 0)
@@ -494,8 +495,8 @@ public final class VexelField {
         w2 *= grow;
         double inside = held(poly, w1, w2);
         if (inside <= 1e-9 * Math.pow(cell, dims - 1) || inside >= SPANS * slice) {
-            derived[k + COVER] = (float) Math.min(1, flatArea / slice);   // the whole slice
-            return;
+            derived[k + DEPTH] = (float) depth(flatVolume, slice);
+            return;   // the whole slice
         }
         derived[k + BX] = (float) b.x();
         derived[k + BY] = (float) b.y();
@@ -505,7 +506,17 @@ public final class VexelField {
         derived[k + UZ] = (float) u.z();
         derived[k + W1] = (float) w1;
         derived[k + W2] = (float) w2;
-        derived[k + COVER] = (float) Math.min(1, flatArea / inside);
+        derived[k + DEPTH] = (float) depth(flatVolume, inside);
+    }
+
+    /**
+     * How deep the flat share's solid runs behind its face: its share of the cell's solid over the face's area. A
+     * flat surface is never a sheet; it is the face of a prism this deep, which reaches the cell's far wall where the
+     * solid does (a floor), and stops short where the solid is thinner (a coarse cell's piece of a sphere), so a ray
+     * passing far behind a weak plane is not taken for one inside solid.
+     */
+    private double depth(double flatVolume, double faceArea) {
+        return Math.max(1e-6 * cell, flatVolume / Math.max(faceArea, 1e-12 * Math.pow(cell, dims - 1)));
     }
 
     /** How much of the slice {@code poly} (the box's frame) lies in the box of half-widths {@code w1}, {@code w2}. */
@@ -532,29 +543,20 @@ public final class VexelField {
         return sum;
     }
 
-    /**
-     * The chance the plane of the cell at {@code k} stops a ray that crosses it at distance {@code plane}: its
-     * coverage within the box its surface lies in, nothing outside.
-     */
-    private double flatChance(int k, int x, int y, int z, Vec3 from, Vec3 d, double plane) {
-        if (Double.isNaN(plane)) {
-            return 0;
-        }
+
+    /** Whether {@code onPlane}, a point on the cell's plane from its centre, is within its footprint. */
+    private boolean inFootprint(int k, Vec3 onPlane) {
         double w1 = derived[k + W1];
         if (w1 < 0) {
-            return derived[k + COVER];
+            return true;
         }
-        Vec3 q = from.plus(d.times(plane)).minus(centre(x, y, z))
-                .minus(new Vec3(derived[k + BX], derived[k + BY], derived[k + BZ]));
+        Vec3 q = onPlane.minus(new Vec3(derived[k + BX], derived[k + BY], derived[k + BZ]));
         Vec3 u = new Vec3(derived[k + UX], derived[k + UY], derived[k + UZ]);
         double eps = 1e-6 * cell;
         if (Math.abs(q.dot(u)) > w1 + eps) {
-            return 0;
+            return false;
         }
-        if (dims == 3 && Math.abs(q.dot(planeNormal(k).cross(u))) > derived[k + W2] + eps) {
-            return 0;
-        }
-        return derived[k + COVER];
+        return dims == 2 || Math.abs(q.dot(planeNormal(k).cross(u))) <= derived[k + W2] + eps;
     }
 
     /**
@@ -680,7 +682,7 @@ public final class VexelField {
      * The field at twice the cell size: each cell the moments of the two by two (2D) or two by two by two (3D)
      * beneath it, combined exactly where they can be. Volume, area and the share of each material are kept; the
      * mean normal of surfaces facing different ways shortens. Offsets are carried onto the new mean direction, a
-     * tilted child's own extent adding to their spread. Granularity, rate and coverage are derived afresh.
+     * tilted child's own extent adding to their spread. Granularity, rate and footprint are derived afresh.
      */
     public VexelField coarser() {
         int px = (nx + 1) / 2, py = (ny + 1) / 2, pz = dims == 3 ? (nz + 1) / 2 : 1;
@@ -821,18 +823,32 @@ public final class VexelField {
 
     /**
      * The expected outcome of the ray from {@code from} along {@code direction}, up to {@code tMax}: per cell it
-     * crosses, the probability of its colliding there. In a cell, the plane stops it with the cell's coverage if it
-     * crosses the plane there, and the granular share with {@code 1 - exp(-rate · length)}; the two are independent.
-     * Distances along the ray are in world units.
+     * crosses, the probability of its colliding there. In a cell, the flat share stops it where it enters the solid
+     * behind the plane, within the footprint, certainly; the granular share with {@code 1 - exp(-depth)}; the
+     * solid's ball with its fill; the three independent. Distances along the ray are in world units.
      */
     public RayHits trace(Vec3 from, Vec3 direction, double tMax) {
         Vec3 d = direction.normalize();
         List<RayHits.Hit> hits = new ArrayList<>();
         double[] through = {1};
+        boolean[] inside = {solidAtStart(from)};
         walk(from, d, tMax, (x, y, z, t, exit) -> {
             int c = cellIndex(x, y, z), k = c * DERIVED;
+            boolean was = inside[0];
+            inside[0] = solidAt(c, x, y, z, from.plus(d.times(Math.max(t, exit - 1e-6 * cell))));
+            if (!was && solidAt(c, x, y, z, from.plus(d.times(Math.min(exit, t + 1e-6 * cell))))) {
+                // into solid at the cell's wall: stopped there
+                int i = c * stride;
+                hits.add(new RayHits.Hit(through[0], t, from.plus(d.times(t)), wallNormal(c, d), derived[k + GRAN],
+                        Arrays.copyOfRange(data, i + MAT, i + MAT + materials)));
+                through[0] = 0;
+                return false;
+            }
+            if (was || data[c * stride + AREA] == 0) {
+                return true;   // in solid already, leaving it, or in a cell of nothing
+            }
             double plane = crossing(c, x, y, z, from, d, t, exit);
-            double flat = flatChance(k, x, y, z, from, d, plane);
+            double flat = Double.isNaN(plane) ? 0 : 1;
             double granular = 1 - Math.exp(-depth(c, x, y, z, from, d, t, exit));
             double entry = through(k, x, y, z, from, d, t, exit);
             double solid = Double.isNaN(entry) ? 0 : derived[k + FILL];
@@ -854,20 +870,33 @@ public final class VexelField {
     }
 
     /**
-     * One outcome of the ray, decided by {@code hash}: the first cell whose plane (by its coverage) or granular share
-     * (by an exponential of its rate) stops it, and where, and on what material; null for a ray that goes through.
-     * Every value drawn is a hash of the cell and the ray's angle bucket, so the outcome holds still while they do.
+     * One outcome of the ray, decided by {@code hash}: the first cell whose flat share (where the ray enters its
+     * solid), granular share (by an exponential of its rate) or solid's ball (by its fill) stops it, and where, and on
+     * what material; null for a ray that goes through. Every value drawn is a hash of the cell and the ray's angle
+     * bucket, so the outcome holds still while they do.
      */
     public Collision collide(Vec3 from, Vec3 direction, double tMax, VexelHash hash) {
         Vec3 d = direction.normalize();
         int bucket = hash.bucket(d, dims);
         Collision[] out = {null};
+        boolean[] inside = {solidAtStart(from)};
         walk(from, d, tMax, (x, y, z, t, exit) -> {
             int c = cellIndex(x, y, z), k = c * DERIVED;
+            boolean was = inside[0];
+            inside[0] = solidAt(c, x, y, z, from.plus(d.times(Math.max(t, exit - 1e-6 * cell))));
+            if (!was && solidAt(c, x, y, z, from.plus(d.times(Math.min(exit, t + 1e-6 * cell))))) {
+                Vec3 n = wallNormal(c, d);
+                out[0] = new Collision(t, from.plus(d.times(t)), n == Vec3.ZERO, n,
+                        pick(c * stride, hash.u(x, y, z, bucket, VexelHash.MATERIAL)), x, y, z);
+                return false;
+            }
+            if (was || data[c * stride + AREA] == 0) {
+                return true;
+            }
             double best = Double.POSITIVE_INFINITY;
             boolean granular = false;
             double plane = crossing(c, x, y, z, from, d, t, exit);
-            if (hash.u(x, y, z, bucket, VexelHash.FLAT) < flatChance(k, x, y, z, from, d, plane)) {
+            if (!Double.isNaN(plane)) {
                 best = plane;
             }
             double target = -Math.log(1 - hash.u(x, y, z, bucket, VexelHash.GRANULAR));
@@ -912,9 +941,9 @@ public final class VexelField {
      * Where the ray enters the cell's solid, as the ball of the solid's centroid and spread, between {@code t} and
      * {@code exit}; NaN if it passes it by. A ray from outside that goes through solid has met a surface, so this
      * stops it with the ball's fill: certainly for a compact solid, seldom for a scattered one. What it is stopped by
-     * goes by granularity: the plane, where the ray crosses it in the cell, or the granular share, with no normal.
-     * The plane's coverage alone is spread evenly over its slice of the cell, which a curved piece of surface (a
-     * sphere's cap) covers only in part, and so lets through rays that go through the cap's solid.
+     * goes by granularity: the plane, where the ray enters behind it in the cell, or the granular share, with no
+     * normal. The flat share alone is a half-space cut by a box, which a curved piece of surface (a sphere's cap)
+     * fits only roughly, and so lets through rays that go through the cap's solid outside the box.
      */
     private double through(int k, int x, int y, int z, Vec3 from, Vec3 d, double t, double exit) {
         double r = derived[k + BALL];
@@ -929,7 +958,7 @@ public final class VexelField {
         }
         double half = Math.sqrt(r * r - across);
         double in = Math.max(t, tc - half), out = Math.min(exit, tc + half);
-        if (derived[k + COVER] > 0) {
+        if (derived[k + HALF] > 0) {
             // a cell with a plane has its solid behind it: only the part of the ball there counts, or the ball of a
             // thin layer of solid would stand out past its surface and stop rays that graze it
             Vec3 n = planeNormal(k);
@@ -948,26 +977,105 @@ public final class VexelField {
         return in < out ? in : Double.NaN;
     }
 
+    /**
+     * Whether point {@code p} in cell {@code c} is solid, as the cell describes it: behind its plane and within its
+     * footprint, for a cell with a flat share; inside its solid's ball, if that ball is at least half solid, for one
+     * with only a granular share; its occupancy at least a half, for one with no surface at all.
+     */
+    private boolean solidAt(int c, int x, int y, int z, Vec3 p) {
+        int i = c * stride, k = c * DERIVED;
+        Vec3 q = p.minus(centre(x, y, z));
+        if (data[i + AREA] == 0) {
+            return data[i + OCC] >= 0.5;
+        }
+        if (derived[k + HALF] > 0) {
+            Vec3 n = planeNormal(k);
+            double above = q.dot(n) - derived[k + PH];
+            return above < 0 && above > -derived[k + DEPTH] && inFootprint(k, q.minus(n.times(above)));
+        }
+        double r = derived[k + BALL];
+        return r > 0 && derived[k + FILL] >= 0.5
+                && q.minus(new Vec3(derived[k + GX], derived[k + GY], derived[k + GZ])).length() < r;
+    }
+
+    /**
+     * Whether the ray is in solid as it comes to {@code from} itself: outside the grid it is not; inside, as the cell
+     * holding it says.
+     */
+    private boolean solidAtStart(Vec3 from) {
+        double[] o = {from.x(), from.y(), from.z()};
+        double[] lo = {origin.x(), origin.y(), origin.z()};
+        int[] n = {nx, ny, nz};
+        int[] idx = new int[3];
+        for (int a = 0; a < 3; a++) {
+            double f = (o[a] - lo[a]) / cell;
+            if (f < 0 || f >= n[a]) {
+                return false;
+            }
+            idx[a] = (int) f;
+        }
+        return solidAt(cellIndex(idx[0], idx[1], idx[2]), idx[0], idx[1], idx[2], from);
+    }
+
+    /**
+     * The normal of a stop where a ray enters a cell's solid at the cell's wall: the cell's plane's, if it has one;
+     * none, for a granular cell; facing the ray, for a cell solid through with no surface in it.
+     */
+    private Vec3 wallNormal(int c, Vec3 d) {
+        if (data[c * stride + AREA] == 0) {
+            return d.times(-1);
+        }
+        return derived[c * DERIVED + HALF] > 0 ? planeNormal(c * DERIVED) : Vec3.ZERO;
+    }
+
     private Vec3 planeNormal(int k) {
         return new Vec3(derived[k + PX], derived[k + PY], derived[k + PZ]);
     }
 
-    /** Where along the ray it crosses cell {@code c}'s plane between {@code t} and {@code exit}; NaN if it does not. */
+    /**
+     * Where along the ray, between {@code t} and {@code exit}, it enters the solid of cell {@code c}'s flat share;
+     * NaN if it does not. That solid is a convex prism: behind the plane to its depth, within the footprint's box (its
+     * four sides running back from the plane), within the cell. So it is entered where the last of those faces is
+     * crossed inward, if that is before the first is crossed outward, as a ray enters a box. Entering through the
+     * plane, a footprint's side, the back or the cell's wall alike; never leaving, since a ray leaving solid crosses
+     * its face too.
+     */
     private double crossing(int c, int x, int y, int z, Vec3 from, Vec3 d, double t, double exit) {
         int k = c * DERIVED;
-        if (derived[k + COVER] == 0) {
+        if (derived[k + HALF] == 0) {
             return Double.NaN;
         }
+        Vec3 q = from.minus(centre(x, y, z));
         Vec3 n = planeNormal(k);
-        Vec3 centre = centre(x, y, z);
-        double h = derived[k + PH];
-        double in = from.plus(d.times(t)).minus(centre).dot(n) - h;
-        double out = from.plus(d.times(exit)).minus(centre).dot(n) - h;
-        double eps = 1e-9 * cell;
-        if (Math.min(in, out) > eps || Math.max(in, out) < -eps) {
-            return Double.NaN;
+        double[] span = {t, exit};
+        bound(span, n, q, d, derived[k + PH]);   // n·p ≤ h: behind the face
+        bound(span, n.times(-1), q, d, derived[k + DEPTH] - derived[k + PH]);   // and no deeper than its depth
+        if (derived[k + W1] >= 0) {
+            Vec3 b = new Vec3(derived[k + BX], derived[k + BY], derived[k + BZ]);
+            Vec3 u = new Vec3(derived[k + UX], derived[k + UY], derived[k + UZ]);
+            bound(span, u, q, d, b.dot(u) + derived[k + W1]);
+            bound(span, u.times(-1), q, d, -b.dot(u) + derived[k + W1]);
+            if (dims == 3) {
+                Vec3 v = n.cross(u);
+                bound(span, v, q, d, b.dot(v) + derived[k + W2]);
+                bound(span, v.times(-1), q, d, -b.dot(v) + derived[k + W2]);
+            }
         }
-        return in == out ? 0.5 * (t + exit) : Math.clamp(t + (exit - t) * in / (in - out), t, exit);
+        return span[0] < span[1] ? span[0] : Double.NaN;
+    }
+
+    /** Narrow {@code span}, a stretch of the ray, to where {@code a·p ≤ limit}, {@code p = q + s d}. */
+    private static void bound(double[] span, Vec3 a, Vec3 q, Vec3 d, double limit) {
+        double rate = a.dot(d), at = a.dot(q);
+        if (rate == 0) {
+            if (at > limit) {
+                span[1] = span[0] - 1;   // outside it all the way
+            }
+        } else if (rate < 0) {
+            span[0] = Math.max(span[0], (limit - at) / rate);   // crossing inward
+        } else {
+            span[1] = Math.min(span[1], (limit - at) / rate);   // crossing outward
+        }
     }
 
     /**
@@ -1034,7 +1142,7 @@ public final class VexelField {
         return materials - 1;
     }
 
-    /** Walk the cells the ray crosses with surface in them, nearest first, by Amanatides and Woo. */
+    /** Walk the cells the ray crosses, nearest first, by Amanatides and Woo. */
     private void walk(Vec3 from, Vec3 d, double tMax, Visit visit) {
         if (d == Vec3.ZERO) {
             throw new IllegalArgumentException("a ray with no direction");
@@ -1083,7 +1191,7 @@ public final class VexelField {
         while (t < t1) {
             int a = next[0] < next[1] ? (next[0] < next[2] ? 0 : 2) : (next[1] < next[2] ? 1 : 2);
             double exit = Math.min(next[a], t1);
-            if (exit > t && data[cellIndex(idx[0], idx[1], idx[2]) * stride + AREA] > 0
+            if (exit > t
                     && !visit.cell(idx[0], idx[1], idx[2], t, exit)) {
                 return;
             }

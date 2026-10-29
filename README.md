@@ -58,43 +58,49 @@ instead), and the ink-trap colouring.
 
 ### Vexel fields (experimental)
 
+A field describes solid, never sheets. A surface is the face of solid: the floor of a level has infinite depth behind
+it, a wall is a prism, and nothing is a plane with no thickness. A ray is stopped where it goes from free space into
+solid, and never where it leaves.
+
 A vexel field says, per cell, how likely a ray is to collide there and with what:
 
 | per cell | what it is |
 |---|---|
 | granularity | `1` is smoke, material building up over distance with no particular normal; `0` is a surface, where the collision is at one point with one normal. Between, the cell is both. |
 | rate | collisions per unit distance travelled, for the granular share |
-| coverage, plane | the flat share: one plane that stops a ray crossing it inside the cell with this chance (`1` a wall, `0.5` a screen door) |
+| plane, footprint, depth | the flat share: a prism of solid behind the plane, within the footprint, as deep as its share of the cell's solid |
 | materials | the chance of each material, given a collision |
 
 The two shares compete along a ray: the granular share's collision falls where an exponential of its rate puts it,
-the plane's where the ray crosses it, and whichever comes first is the collision. The rate is per distance because
-granular material is met more the further a ray goes through it; the plane's chance is per crossing because a surface
-is met once by any ray that crosses it, at any angle.
+the flat share's where the ray enters its prism, and whichever comes first is the collision. The rate is per distance
+because granular material is met more the further a ray goes through it; the prism is met once, where it is entered,
+through its face, its sides or a cell's wall alike.
 
 All of that is derived from moments the cell keeps underneath: how much of it is solid, and the centroid and spread
 of that solid; its surface area, the area-weighted mean of the surface's normals, where the surface sits along that
-mean and how far it strays; the share of each material, and the mean and variance of any continuous attributes.
-Moments average exactly, which distances do not, so `coarser()` combines eight cells into one (four in 2D) by
-moments, never by resampling: volume, area, material shares and the solid's centroid are kept exactly, and detail lost
-to distance turns into granularity.
+mean and how far it strays, and the centroid and covariance of where it lies; the share of each material, and the mean
+and variance of any continuous attributes. Moments average exactly, which distances do not, so `coarser()` combines
+eight cells into one (four in 2D) by moments, never by resampling: volume, area, material shares and centroids are
+kept exactly, and detail lost to distance turns into granularity.
+
+The flat share's prism: its face is a box on the plane from the surface's centroid and covariance (half-widths
+`√(3·variance)`, the box a uniform rectangle's moments give back exactly), grown until it holds the flat area within
+the plane's slice of the cell, and taken as the whole slice once it holds 85% of it, so a surface spanning its cell
+keeps every corner and no crack opens between cells. Its depth is its share of the cell's solid over its face's area:
+a floor's reaches the cell's far wall, a coarse cell's piece of a sphere stops short.
 
 The granular share is grains of solid, as stochastic geometry's Boolean model has them. A ray from the free space
 between grains enters one at a rate of `S/4 ÷ (1 − occupancy)` per unit distance in 3D (`S/π ÷ (1 − occupancy)` in
 2D), so a mostly solid cell stops a ray almost at once. That rate is spread over the cell as a Gaussian at the solid's
 centroid with the solid's spread, so a ray through a coarse ball meets it and one past its edge does not.
 
-The solid itself counts too. A ray from outside that goes through solid has met a surface, so each cell treats its
-solid as a ball at its centroid whose mean squared radius is its spread, clipped to the solid side of the cell's plane
-where it has one. A ray through that ball is stopped with the ball's fill (`solidFill`): how much of it the solid
-would fill, `1` for a solid ball and toward `0` for a solid scattered thin, as foliage is, which should not turn
-opaque. Granularity then says what stopped it, the plane or the granular share.
+The solid as a whole counts too: each cell treats its solid as a ball at its centroid whose mean squared radius is its
+spread, clipped to the solid side of the cell's plane where it has one, and a ray entering that ball is stopped with
+the ball's fill (`solidFill`), `1` for a solid ball and toward `0` for a solid scattered thin, as foliage is.
 
-A plane's coverage applies only where its surface is: a box on the plane, from the surface's centroid and covariance
-(half-widths `√(3·variance)`, the box a uniform rectangle's moments give back exactly), grown until it holds the flat
-area within the plane's slice of the cell. Once it holds 85% of the slice it is taken as the whole slice, so a surface
-that spans its cell keeps every corner and no crack opens between neighbouring cells. Without the box, a cell holding
-a curved cap spread its coverage over the whole slice and stopped rays past the cap's edge.
+The walk keeps whether the ray is in solid, as each cell describes it: in a cell's prism, in a granular cell's ball
+when that is at least half full, or in a cell with no surface that is at least half solid. A ray that comes to a cell
+in solid is leaving it and is not stopped there; one that comes into solid at a cell's wall is stopped at the wall.
 
 A sphere of radius 3, baked in cells of 0.25 and coarsened, with vertical rays over it: the mean chance of a stop for
 rays inside its outline (want 1) and outside it (want 0), and its mean granularity.
@@ -104,24 +110,23 @@ cell   granularity   inside   outside
 0.25   0.015         1.000    0.000
 0.50   0.034         1.000    0.000
 1      0.077         1.000    0.001
-2      0.149         0.987    0.009
-4      0.350         0.991    0.073
+2      0.149         1.000    0.009
+4      0.350         0.999    0.077
 8      1.000         1.000    0.067    one cell
 ```
 
 Two ways to ask a ray. `trace` gives the expected outcome, the chance of a collision in each cell. `collide` gives one
 outcome, every value it draws a `VexelHash` of the cell, the ray's direction quantized to an angle bucket, a seed and
 what is being decided, so the outcome holds still from frame to frame while the view stays in its bucket. The grain is
-the cell: a half-covered cell is wholly there or wholly not, from one bucket. Averaged over seeds, `collide` agrees
-with `trace` (`hashedCollisionsAverageToTheExpectedOutcome`).
+the cell: a cell whose granular share stops a ray half the time is wholly there or wholly not, from one bucket; its
+prism draws nothing, being solid. Averaged over seeds, `collide` agrees with `trace`
+(`hashedCollisionsAverageToTheExpectedOutcome`).
 
 Known:
-* The 85% at which a box becomes the whole slice is tuned on one sphere: at 80% the leak came back at cells of 2, at
-  90% cracks opened at cells of 1. On a smaller sphere off the grid and on a cube turned 30° it held (leak at cells of
-  4: 0.124 → 0.047 and 0.170 → 0.099), but cost the small sphere a little inside at cells of 2 (0.994 → 0.981).
-* A box is a rectangle's moments: a cap shaped otherwise (a curved triangle) still leaks a little past its corners,
-  the 0.073 above.
-* The bake measures a plane's area up to 0.7% short of its slice, so a wall cell is a screen door of about 0.993.
+* The 85% at which a footprint becomes the whole slice is tuned on one sphere: at 80% the leak came back at cells of 2,
+  at 90% cracks opened at cells of 1.
+* A prism is a rough shape for three faces meeting at a corner: a cube turned 30° leaks 0.124 outside its outline at
+  cells of 4 (0.994 inside), and a curved-triangle cap a little past its corners (the 0.077 above).
 * One Gaussian per cell: solid in several clumps (eight grains in a cell's corners) is put in one blob between them,
   and a ray through the empty middle is stopped by the granular share about 30% of the time.
 * The Gaussian's tails past the cell's walls are lost, so a cell whose solid is spread wide undercounts its rate.
