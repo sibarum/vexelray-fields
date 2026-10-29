@@ -17,7 +17,7 @@ package dev.vexelray.fields.vexel;
 public record VexelHash(long seed, int steps) {
 
     /** What an outcome decides; each draws its own value. */
-    static final int FLAT = 0, GRANULAR = 1, MATERIAL = 2;
+    static final int FLAT = 0, GRANULAR = 1, MATERIAL = 2, SOLID = 3, KIND = 4;
 
     public VexelHash {
         if (steps <= 0) {

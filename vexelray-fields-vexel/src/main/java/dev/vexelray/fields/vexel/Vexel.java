@@ -23,6 +23,8 @@ package dev.vexelray.fields.vexel;
  * @param occupancy         the share of the cell inside the solid
  * @param solidCentroid     the centroid of that solid, from the cell's centre
  * @param solidSpread       the solid's mean squared distance from its centroid
+ * @param solidFill         how much of the ball of that centroid and spread is solid: {@code 1} for a solid ball,
+ *                          toward {@code 0} for a solid scattered thin; a ray through it is stopped with this chance
  * @param surfaceDensity    surface area per unit volume (in 2D, outline length per unit area)
  * @param meanNormal        the area-weighted mean of the outward unit normals
  * @param offsetVariance    how far the surface strays from {@code offset}, squared
@@ -30,8 +32,9 @@ package dev.vexelray.fields.vexel;
  * @param attributeVariance and its variance
  */
 public record Vexel(double granularity, double rate, double coverage, Vec3 normal, double offset, float[] materials,
-                   double occupancy, Vec3 solidCentroid, double solidSpread, double surfaceDensity, Vec3 meanNormal,
-                   double offsetVariance, float[] attributeMean, float[] attributeVariance) {
+                   double occupancy, Vec3 solidCentroid, double solidSpread, double solidFill,
+                   double surfaceDensity, Vec3 meanNormal, double offsetVariance,
+                   float[] attributeMean, float[] attributeVariance) {
 
     public boolean hasSurface() {
         return surfaceDensity > 0;

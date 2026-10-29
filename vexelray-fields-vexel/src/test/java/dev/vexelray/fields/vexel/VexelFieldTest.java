@@ -133,7 +133,63 @@ class VexelFieldTest {
         double past = cloud.trace(new Vec3(0.5, 0.5, -1), UP).probability();   // 4.9 from the axis: misses
         assertTrue(middle > 0.9, "through the middle: " + middle);
         assertTrue(past < 0.02, "past the edge: " + past);
-        assertEquals(4, cloud.trace(new Vec3(4, 4, -1), UP).expectedDistance(), 1.0);
+        assertEquals(2, cloud.trace(new Vec3(4, 4, -1), UP).expectedDistance(), 1.0);   // the bottom is at z 1
+    }
+
+    /**
+     * At every level, rays straight down onto the sphere are stopped inside its outline and pass outside it. A cell
+     * holding a curved cap had its plane's coverage spread over the whole slice and let rays through the cap's solid.
+     */
+    @Test
+    void everyLevelKeepsTheOutline() {
+        VexelField f = VexelField.bake(Solid.sphere(new Vec3(4, 4, 4), 3), Vec3.ZERO, 0.25, 32, 32, 32, 6);
+        // the most a level may stop outside the outline: what the plane's even coverage leaks past a cap's edge
+        double[] leak = {0.001, 0.001, 0.005, 0.05, 0.25, 0.08};
+        for (int level = 0; level < leak.length; level++) {
+            double in = 0, out = 0;
+            int ni = 0, no = 0;
+            for (double x = 0.1; x < 8; x += 0.4) {
+                for (double y = 0.1; y < 8; y += 0.4) {
+                    double r = Math.hypot(x - 4, y - 4);
+                    double p = f.trace(new Vec3(x, y, -1), UP).probability();
+                    if (r < 2.9) {
+                        in += p;
+                        ni++;
+                    } else if (r > 3.1) {
+                        out += p;
+                        no++;
+                    }
+                }
+            }
+            assertTrue(in / ni > 0.97, "cell " + f.cellSize() + ": inside the outline " + in / ni);
+            assertTrue(out / no < leak[level], "cell " + f.cellSize() + ": outside the outline " + out / no);
+            if (level < leak.length - 1) {
+                f = f.coarser();
+            }
+        }
+    }
+
+    @Test
+    void aScatteredSolidIsNotMadeOpaque() {
+        // eight small balls near the corners of one cell: spread wide, little volume, so the ball of their spread is
+        // nearly empty and stops a ray through it seldom; a solid ball fills its own
+        Solid grit = (x, y, z) -> {
+            double best = -1e9;
+            for (double cx : new double[]{1, 3}) {
+                for (double cy : new double[]{1, 3}) {
+                    for (double cz : new double[]{1, 3}) {
+                        best = Math.max(best, 0.3 - new Vec3(x - cx, y - cy, z - cz).length());
+                    }
+                }
+            }
+            return best;
+        };
+        VexelField cell = VexelField.bake(grit, Vec3.ZERO, 0.25, 16, 16, 16, 4).coarser().coarser().coarser()
+                .coarser();
+        assertEquals(1, cell.sizeX());
+        assertTrue(cell.vexel(0, 0, 0).solidFill() < 0.05, "grit fills " + cell.vexel(0, 0, 0).solidFill());
+        Vexel ball = sphere().coarser().coarser().coarser().coarser().vexel(0, 0, 0);
+        assertEquals(1, ball.solidFill(), 0.05);
     }
 
     @Test

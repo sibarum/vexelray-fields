@@ -44,7 +44,7 @@ public final class VexelField {
             SX = 7, SY = 8, SZ = 9, S_VAR = 10, MAT = 11;
     /** What is derived from them, per cell. */
     private static final int RATE = 0, COVER = 1, GRAN = 2, PX = 3, PY = 4, PZ = 5, PH = 6, GX = 7, GY = 8, GZ = 9,
-            G_VAR = 10, DERIVED = 11;
+            G_VAR = 10, BALL = 11, FILL = 12, DERIVED = 13;
 
     private final int dims;
     private final Vec3 origin;
@@ -149,7 +149,7 @@ public final class VexelField {
         return new Vexel(derived[k + GRAN], derived[k + RATE], derived[k + COVER],
                 new Vec3(derived[k + PX], derived[k + PY], derived[k + PZ]), derived[k + PH],
                 Arrays.copyOfRange(data, i + MAT, i + MAT + materials),
-                data[i + OCC], new Vec3(data[i + SX], data[i + SY], data[i + SZ]), data[i + S_VAR],
+                data[i + OCC], new Vec3(data[i + SX], data[i + SY], data[i + SZ]), data[i + S_VAR], derived[k + FILL],
                 data[i + AREA], new Vec3(data[i + NX], data[i + NY], data[i + NZ]), data[i + H_VAR], mean, var);
     }
 
@@ -332,6 +332,9 @@ public final class VexelField {
      * share because a ray is only ever in the free space between grains until it hits. So a cell mostly solid stops a
      * ray almost at once. That rate is the cell's average: where in the cell the grains are is the solid's centroid
      * and spread, and {@link #depth} spreads the rate as a Gaussian there.
+     *
+     * <p>And the solid itself, as a ball at its centroid whose mean squared radius is its spread, a share of which,
+     * its fill, is solid: one for a solid ball, less for a solid spread thinner, as foliage is. See {@link #through}.
      */
     private void derive(int c) {
         int i = c * stride, k = c * DERIVED;
@@ -358,6 +361,15 @@ public final class VexelField {
         derived[k + GY] = data[i + SY];
         derived[k + GZ] = data[i + SZ];
         derived[k + G_VAR] = data[i + OCC] > 0 ? data[i + S_VAR] / dims : 0;
+        if (data[i + OCC] > 0) {
+            // the solid as a ball of its own spread (a uniform ball's mean squared radius is 3/5 R², a disc's 1/2 R²)
+            // and how full of solid that ball would be
+            double ball = Math.sqrt(data[i + S_VAR] * (dims == 3 ? 5 / 3.0 : 2));
+            double ballVolume = dims == 3 ? 4 / 3.0 * Math.PI * ball * ball * ball : Math.PI * ball * ball;
+            derived[k + BALL] = (float) ball;
+            derived[k + FILL] = ballVolume > 0
+                    ? (float) Math.min(1, data[i + OCC] * Math.pow(cell, dims) / ballVolume) : 0;
+        }
         derived[k + COVER] = (float) coverage;
         derived[k + GRAN] = (float) granularity;
         derived[k + PX] = (float) axis.x();
@@ -561,11 +573,15 @@ public final class VexelField {
             double plane = crossing(c, x, y, z, from, d, t, exit);
             double flat = Double.isNaN(plane) ? 0 : derived[k + COVER];
             double granular = 1 - Math.exp(-depth(c, x, y, z, from, d, t, exit));
-            double p = 1 - (1 - flat) * (1 - granular);
+            double entry = through(k, x, y, z, from, d, t, exit);
+            double solid = Double.isNaN(entry) ? 0 : derived[k + FILL];
+            double p = 1 - (1 - flat) * (1 - granular) * (1 - solid);
             if (p > 0) {
+                double g = derived[k + GRAN];
                 double th = (flat * (Double.isNaN(plane) ? 0 : plane)
-                        + (granular > 0 ? granular * meanStop(c, x, y, z, from, d, t, exit, granular) : 0))
-                        / (flat + granular);
+                        + (granular > 0 ? granular * meanStop(c, x, y, z, from, d, t, exit, granular) : 0)
+                        + (solid > 0 ? solid * ((1 - g) * (Double.isNaN(plane) ? entry : plane) + g * entry) : 0))
+                        / (flat + granular + solid);
                 int i = c * stride;
                 hits.add(new RayHits.Hit(through[0] * p, th, from.plus(d.times(th)), planeNormal(k),
                         derived[k + GRAN], Arrays.copyOfRange(data, i + MAT, i + MAT + materials)));
@@ -611,6 +627,15 @@ public final class VexelField {
                     granular = true;
                 }
             }
+            double entry = through(k, x, y, z, from, d, t, exit);
+            if (!Double.isNaN(entry) && hash.u(x, y, z, bucket, VexelHash.SOLID) < derived[k + FILL]) {
+                boolean kind = hash.u(x, y, z, bucket, VexelHash.KIND) < derived[k + GRAN];
+                double ts = kind || Double.isNaN(plane) ? entry : plane;
+                if (ts < best) {
+                    best = ts;
+                    granular = kind;
+                }
+            }
             if (best == Double.POSITIVE_INFINITY) {
                 return true;
             }
@@ -620,6 +645,46 @@ public final class VexelField {
             return false;
         });
         return out[0];
+    }
+
+    /**
+     * Where the ray enters the cell's solid, as the ball of the solid's centroid and spread, between {@code t} and
+     * {@code exit}; NaN if it passes it by. A ray from outside that goes through solid has met a surface, so this
+     * stops it with the ball's fill: certainly for a compact solid, seldom for a scattered one. What it is stopped by
+     * goes by granularity: the plane, where the ray crosses it in the cell, or the granular share, with no normal.
+     * The plane's coverage alone is spread evenly over its slice of the cell, which a curved piece of surface (a
+     * sphere's cap) covers only in part, and so lets through rays that go through the cap's solid.
+     */
+    private double through(int k, int x, int y, int z, Vec3 from, Vec3 d, double t, double exit) {
+        double r = derived[k + BALL];
+        if (r <= 0 || derived[k + FILL] <= 0) {
+            return Double.NaN;
+        }
+        Vec3 w = centre(x, y, z).plus(new Vec3(derived[k + GX], derived[k + GY], derived[k + GZ])).minus(from);
+        double tc = w.dot(d);
+        double across = w.dot(w) - tc * tc;
+        if (across >= r * r) {
+            return Double.NaN;
+        }
+        double half = Math.sqrt(r * r - across);
+        double in = Math.max(t, tc - half), out = Math.min(exit, tc + half);
+        if (derived[k + COVER] > 0) {
+            // a cell with a plane has its solid behind it: only the part of the ball there counts, or the ball of a
+            // thin layer of solid would stand out past its surface and stop rays that graze it
+            Vec3 n = planeNormal(k);
+            double at = from.minus(centre(x, y, z)).dot(n) - derived[k + PH];   // signed height above the plane
+            double rise = d.dot(n);
+            if (rise == 0) {
+                if (at > 0) {
+                    return Double.NaN;
+                }
+            } else if (rise > 0) {
+                out = Math.min(out, -at / rise);
+            } else {
+                in = Math.max(in, -at / rise);
+            }
+        }
+        return in < out ? in : Double.NaN;
     }
 
     private Vec3 planeNormal(int k) {

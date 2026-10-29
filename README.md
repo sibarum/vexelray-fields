@@ -84,12 +84,23 @@ between grains enters one at a rate of `S/4 ÷ (1 − occupancy)` per unit dista
 2D), so a mostly solid cell stops a ray almost at once. That rate is spread over the cell as a Gaussian at the solid's
 centroid with the solid's spread, so a ray through a coarse ball meets it and one past its edge does not.
 
-A sphere of radius 3, baked in cells of 0.25 and coarsened, with a ray through its middle:
+The solid itself counts too. A ray from outside that goes through solid has met a surface, so each cell treats its
+solid as a ball at its centroid whose mean squared radius is its spread, clipped to the solid side of the cell's plane
+where it has one. A ray through that ball is stopped with the ball's fill (`solidFill`): how much of it the solid
+would fill, `1` for a solid ball and toward `0` for a solid scattered thin, as foliage is, which should not turn
+opaque. Granularity then says what stopped it, the plane or the granular share.
+
+A sphere of radius 3, baked in cells of 0.25 and coarsened, with vertical rays over it: the mean chance of a stop for
+rays inside its outline (want 1) and outside it (want 0), and its mean granularity.
 
 ```
-cell 0.25: mean granularity 0.015, stopped 1.000    cell 2.00: mean granularity 0.149, stopped 0.978
-cell 0.50: mean granularity 0.034, stopped 1.000    cell 4.00: mean granularity 0.350, stopped 0.855
-cell 1.00: mean granularity 0.077, stopped 1.000    cell 8.00: mean granularity 1.000, stopped 0.949 (one cell)
+cell   granularity   inside   outside
+0.25   0.015         1.000    0.000
+0.50   0.034         1.000    0.000
+1      0.077         1.000    0.001
+2      0.149         0.988    0.035
+4      0.350         0.982    0.239
+8      1.000         1.000    0.067    one cell
 ```
 
 Two ways to ask a ray. `trace` gives the expected outcome, the chance of a collision in each cell. `collide` gives one
@@ -99,8 +110,11 @@ the cell: a half-covered cell is wholly there or wholly not, from one bucket. Av
 with `trace` (`hashedCollisionsAverageToTheExpectedOutcome`).
 
 Known:
-* A cell's flat share is one mean plane. A cell holding a curved piece (each cell at size 4 above holds one octant's
-  cap) can be crossed through its solid by a ray that misses the plane inside the cell, which is the 0.855.
+* A plane's coverage is spread evenly over its slice of the cell. A cell holding a curved piece (each cell at size 4
+  above holds one octant's cap) covers only part of that slice, so rays past the cap's edge are stopped as if by a
+  screen door: the 0.239 outside the outline. The solid's ball fixed the opposite case, rays through the cap.
+* One Gaussian per cell: solid in several clumps (eight grains in a cell's corners) is put in one blob between them,
+  and a ray through the empty middle is stopped by the granular share about 30% of the time.
 * The Gaussian's tails past the cell's walls are lost, so a cell whose solid is spread wide undercounts its rate.
 * The rate's free share is the cell's average occupancy, not the occupancy where the ray is.
 
