@@ -1,0 +1,111 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>dev.vexelray.fields</groupId>
+    <artifactId>vexelray-fields</artifactId>
+    <version>0.2.0-SNAPSHOT</version>
+    <packaging>pom</packaging>
+
+    <name>vexelray-fields</name>
+    <description>
+        Shapes as fields: signed distance fields, multi-channel ones (MSDF, MTSDF), and vexel fields, an experiment in
+        keeping the probability of a hit and what the surface is like where it is hit instead of one distance. Plain
+        Java, no GPU and no native code: a field is made here and drawn by whoever uploads it.
+    </description>
+
+    <modules>
+        <!-- What every field is made from and made into: a shape of contours and edges (lines, quadratic and cubic
+             Béziers), the grid of floats a field is, the framing that maps one onto the other, and the bytes a GPU
+             uploads. Depends on nothing. -->
+        <module>vexelray-fields-core</module>
+        <!-- One true distance per texel: from a shape's edges exactly, or from a raster mask by an exact Euclidean
+             distance transform, as vexelray-canvas's DistanceField makes it. -->
+        <module>vexelray-fields-sdf</module>
+        <!-- Three distances whose median is the edge, so corners stay sharp under magnification (Chlumský's MSDF), and
+             MTSDF, those three with a true distance in a fourth. Edge colouring, generation and clash correction, in
+             Java, where the stack's fonts go through msdf-atlas-gen today. -->
+        <module>vexelray-fields-msdf</module>
+        <!-- Experimental. Vexel fields: per cell, the probability a ray is stopped there and the moments of the surface
+             it stops on (normal, offset, attributes), which average correctly where distances do not. -->
+        <module>vexelray-fields-vexel</module>
+    </modules>
+
+    <properties>
+        <maven.compiler.release>25</maven.compiler.release>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+
+        <junit.version>5.11.4</junit.version>
+    </properties>
+
+    <dependencyManagement>
+        <dependencies>
+            <!-- Reactor-internal modules: children and applications reference these without a version. -->
+            <dependency>
+                <groupId>dev.vexelray.fields</groupId>
+                <artifactId>vexelray-fields-core</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>dev.vexelray.fields</groupId>
+                <artifactId>vexelray-fields-sdf</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>dev.vexelray.fields</groupId>
+                <artifactId>vexelray-fields-msdf</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>dev.vexelray.fields</groupId>
+                <artifactId>vexelray-fields-vexel</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.junit</groupId>
+                <artifactId>junit-bom</artifactId>
+                <version>${junit.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <dependencies>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <pluginManagement>
+            <plugins>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-compiler-plugin</artifactId>
+                    <version>3.13.0</version>
+                    <!-- Explicit release on the plugin as well as the property, so IDEs pick up the Java 25
+                         language level reliably. Same as the sibling repos. -->
+                    <configuration>
+                        <target>${maven.compiler.release}</target>
+                        <release>${maven.compiler.release}</release>
+                        <compilerArgs>
+                            <!-- A {@link} to something that no longer exists is the one Javadoc defect a machine
+                                 can find. As in vexelray-framework. -->
+                            <arg>-Xdoclint:reference,syntax</arg>
+                        </compilerArgs>
+                    </configuration>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-surefire-plugin</artifactId>
+                    <version>3.5.2</version>
+                </plugin>
+            </plugins>
+        </pluginManagement>
+    </build>
+</project>
