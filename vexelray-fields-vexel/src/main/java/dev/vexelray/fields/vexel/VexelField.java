@@ -41,10 +41,13 @@ public final class VexelField {
 
     /** The moments: what is kept, baked and combined. */
     private static final int OCC = 0, AREA = 1, NX = 2, NY = 3, NZ = 4, H_MEAN = 5, H_VAR = 6,
-            SX = 7, SY = 8, SZ = 9, S_VAR = 10, MAT = 11;
+            SX = 7, SY = 8, SZ = 9, S_VAR = 10, FX = 11, FY = 12, FZ = 13, F_COV = 14, MAT = 20;
+    /** The order a covariance's six terms are kept in, after {@link #F_COV}. */
+    private static final int[][] COV = {{0, 3, 4}, {3, 1, 5}, {4, 5, 2}};
     /** What is derived from them, per cell. */
     private static final int RATE = 0, COVER = 1, GRAN = 2, PX = 3, PY = 4, PZ = 5, PH = 6, GX = 7, GY = 8, GZ = 9,
-            G_VAR = 10, BALL = 11, FILL = 12, DERIVED = 13;
+            G_VAR = 10, BALL = 11, FILL = 12, BX = 13, BY = 14, BZ = 15, UX = 16, UY = 17, UZ = 18, W1 = 19, W2 = 20,
+            DERIVED = 21;
 
     private final int dims;
     private final Vec3 origin;
@@ -146,8 +149,11 @@ public final class VexelField {
             mean[a] = data[i + attr + a];
             var[a] = Math.max(0, data[i + attr + attributes + a] - mean[a] * mean[a]);
         }
+        Vexel.Footprint footprint = derived[k + W1] < 0 ? null : new Vexel.Footprint(
+                new Vec3(derived[k + BX], derived[k + BY], derived[k + BZ]),
+                new Vec3(derived[k + UX], derived[k + UY], derived[k + UZ]), derived[k + W1], derived[k + W2]);
         return new Vexel(derived[k + GRAN], derived[k + RATE], derived[k + COVER],
-                new Vec3(derived[k + PX], derived[k + PY], derived[k + PZ]), derived[k + PH],
+                new Vec3(derived[k + PX], derived[k + PY], derived[k + PZ]), derived[k + PH], footprint,
                 Arrays.copyOfRange(data, i + MAT, i + MAT + materials),
                 data[i + OCC], new Vec3(data[i + SX], data[i + SY], data[i + SZ]), data[i + S_VAR], derived[k + FILL],
                 data[i + AREA], new Vec3(data[i + NX], data[i + NY], data[i + NZ]), data[i + H_VAR], mean, var);
@@ -264,10 +270,18 @@ public final class VexelField {
         double hm = 0, h2 = 0;
         double[] mat = new double[materials];
         double[] am = new double[attributes], a2 = new double[attributes];
+        double[] fs = new double[3], ff = new double[6];
         for (Sample b : band) {
             double off = b.at.minus(c).dot(axis);
             hm += b.w * off;
             h2 += b.w * off * off;
+            double[] f = xyz(b.at.minus(c));
+            for (int p = 0; p < 3; p++) {
+                fs[p] += b.w * f[p];
+                for (int q = p; q < 3; q++) {
+                    ff[COV[p][q]] += b.w * f[p] * f[q];
+                }
+            }
             mat[Math.clamp(solid.material(b.at, b.normal), 0, materials - 1)] += b.w;
             float[] values = solid.attributes(b.at, b.normal);
             for (int a = 0; a < attributes; a++) {
@@ -277,6 +291,33 @@ public final class VexelField {
         }
         hm /= area;
         store(i, area / Math.pow(cell, dims), mean, hm, h2 / area - hm * hm, mat, am, a2, area);
+        // where the surface is: each foot stands for a patch h across, whose own spread, h²/12 an axis, is added
+        double[] m = {fs[0] / area, fs[1] / area, fs[2] / area};
+        double[] cov = new double[6];
+        for (int p = 0; p < 3; p++) {
+            for (int q = p; q < 3; q++) {
+                cov[COV[p][q]] = ff[COV[p][q]] / area - m[p] * m[q] + (p == q && (p < 2 || dims == 3) ? h * h / 12 : 0);
+            }
+        }
+        storeSurface(i, m, cov);
+    }
+
+    private static double[] xyz(Vec3 v) {
+        return new double[]{v.x(), v.y(), v.z()};
+    }
+
+    /** Write where a cell's surface is: its area-weighted centroid from the cell's centre, and its covariance. */
+    private void storeSurface(int i, double[] centroid, double[] cov) {
+        data[i + FX] = (float) centroid[0];
+        data[i + FY] = (float) centroid[1];
+        data[i + FZ] = (float) centroid[2];
+        for (int p = 0; p < 6; p++) {
+            data[i + F_COV + p] = (float) cov[p];
+        }
+    }
+
+    private double cov(int i, int p, int q) {
+        return data[i + F_COV + COV[p][q]];
     }
 
     /** Whether {@code v} is in {@code [from, from + cell)}. */
@@ -339,6 +380,7 @@ public final class VexelField {
     private void derive(int c) {
         int i = c * stride, k = c * DERIVED;
         Arrays.fill(derived, k, k + DERIVED, 0f);
+        derived[k + W1] = -1;   // no footprint: the coverage, if any, is the slice's
         double s = data[i + AREA];
         if (s == 0) {
             return;
@@ -370,6 +412,10 @@ public final class VexelField {
             derived[k + FILL] = ballVolume > 0
                     ? (float) Math.min(1, data[i + OCC] * Math.pow(cell, dims) / ballVolume) : 0;
         }
+        if (coverage > 0) {
+            footprint(i, k, axis, coherence * s * Math.pow(cell, dims), slice);
+            coverage = derived[k + COVER];
+        }
         derived[k + COVER] = (float) coverage;
         derived[k + GRAN] = (float) granularity;
         derived[k + PX] = (float) axis.x();
@@ -379,10 +425,164 @@ public final class VexelField {
     }
 
     /**
+     * How much of its slice a box must already hold before it is taken as the whole slice. Below, the box keeps a
+     * curved cap's plane from stopping rays past the cap's edge; above, a surface that spans its cell keeps every
+     * corner of its slice, so neighbouring cells leave no crack between them along their shared walls. Tuned on a
+     * sphere: 0.8 let the leak back at cells of 2, and 0.9 opened cracks at cells of 1.
+     */
+    private static final double SPANS = 0.85;
+
+    /**
+     * Where on its plane a cell's surface lies, from the surface's centroid and covariance: a box (a segment, in 2D)
+     * centred on the centroid's foot on the plane, along the principal axes of the covariance projected into the
+     * plane, each half-width {@code √(3 · variance)}, the box a uniform rectangle's moments give back exactly. Grown
+     * until, within the plane's slice of the cell, it holds the flat area; taken as the whole slice once it holds
+     * {@link #SPANS} of it. The coverage within it is the flat area over the area it holds, so the area covered is
+     * kept. Writes the box and the coverage into {@code derived}; no box ({@code W1} negative) means the slice.
+     */
+    private void footprint(int i, int k, Vec3 n, double flatArea, double slice) {
+        Vec3 m = new Vec3(data[i + FX], data[i + FY], data[i + FZ]);
+        Vec3 b = m.minus(n.times(n.dot(m) - data[i + H_MEAN]));
+        Vec3 t1 = dims == 2 ? new Vec3(-n.y(), n.x(), 0)
+                : (Math.abs(n.x()) < 0.9 ? new Vec3(1, 0, 0) : new Vec3(0, 1, 0)).cross(n).normalize();
+        Vec3 t2 = n.cross(t1);
+        double a11 = quad(i, t1, t1);
+        Vec3 u = t1;
+        double w1, w2 = 0;
+        if (dims == 2) {
+            w1 = Math.sqrt(3 * Math.max(0, a11));
+        } else {
+            double a12 = quad(i, t1, t2), a22 = quad(i, t2, t2);
+            double mid = (a11 + a22) / 2, diff = Math.hypot((a11 - a22) / 2, a12);
+            double l1 = mid + diff, l2 = mid - diff;
+            if (Math.abs(a12) > 1e-12 * (Math.abs(a11) + Math.abs(a22))) {
+                u = t1.times(a12).plus(t2.times(l1 - a11)).normalize();
+            } else if (a22 > a11) {
+                u = t2;
+            }
+            w1 = Math.sqrt(3 * Math.max(0, l1));
+            w2 = Math.sqrt(3 * Math.max(0, l2));
+        }
+        // the slice, in the box's own frame: along u, and across it
+        Vec3 v = n.cross(u);
+        List<Vec3> points = slice(n, data[i + H_MEAN]);
+        double[][] poly = new double[points.size()][];
+        double reach = 0;
+        w1 = Math.max(w1, 1e-3 * cell);
+        w2 = Math.max(w2, 1e-3 * cell);
+        for (int j = 0; j < poly.length; j++) {
+            Vec3 p = points.get(j).minus(b);
+            poly[j] = new double[]{p.dot(u), p.dot(v)};
+            reach = Math.max(reach, Math.max(Math.abs(poly[j][0]) / w1, dims == 3 ? Math.abs(poly[j][1]) / w2 : 0));
+        }
+        // grow the box until, within the slice, it holds the flat area
+        double want = Math.min(flatArea, slice) * (1 - 1e-6);
+        double grow = 1;
+        if (held(poly, w1, w2) < want) {
+            double lo = 1, hi = Math.max(1, reach);
+            for (int j = 0; j < 40; j++) {
+                double mid = 0.5 * (lo + hi);
+                if (held(poly, w1 * mid, w2 * mid) < want) {
+                    lo = mid;
+                } else {
+                    hi = mid;
+                }
+            }
+            grow = hi;
+        }
+        w1 *= grow;
+        w2 *= grow;
+        double inside = held(poly, w1, w2);
+        if (inside <= 1e-9 * Math.pow(cell, dims - 1) || inside >= SPANS * slice) {
+            derived[k + COVER] = (float) Math.min(1, flatArea / slice);   // the whole slice
+            return;
+        }
+        derived[k + BX] = (float) b.x();
+        derived[k + BY] = (float) b.y();
+        derived[k + BZ] = (float) b.z();
+        derived[k + UX] = (float) u.x();
+        derived[k + UY] = (float) u.y();
+        derived[k + UZ] = (float) u.z();
+        derived[k + W1] = (float) w1;
+        derived[k + W2] = (float) w2;
+        derived[k + COVER] = (float) Math.min(1, flatArea / inside);
+    }
+
+    /** How much of the slice {@code poly} (the box's frame) lies in the box of half-widths {@code w1}, {@code w2}. */
+    private double held(double[][] poly, double w1, double w2) {
+        if (dims == 2) {
+            if (poly.length < 2) {
+                return 0;
+            }
+            double a = Math.min(poly[0][0], poly[1][0]), b = Math.max(poly[0][0], poly[1][0]);
+            return Math.max(0, Math.min(b, w1) - Math.max(a, -w1));
+        }
+        return poly.length < 3 ? 0 : clippedArea(poly, w1, w2);
+    }
+
+    /** {@code aᵀ C b} for cell {@code i}'s surface covariance {@code C}. */
+    private double quad(int i, Vec3 a, Vec3 b) {
+        double[] x = xyz(a), y = xyz(b);
+        double sum = 0;
+        for (int p = 0; p < 3; p++) {
+            for (int q = 0; q < 3; q++) {
+                sum += x[p] * cov(i, Math.min(p, q), Math.max(p, q)) * y[q];
+            }
+        }
+        return sum;
+    }
+
+    /**
+     * The chance the plane of the cell at {@code k} stops a ray that crosses it at distance {@code plane}: its
+     * coverage within the box its surface lies in, nothing outside.
+     */
+    private double flatChance(int k, int x, int y, int z, Vec3 from, Vec3 d, double plane) {
+        if (Double.isNaN(plane)) {
+            return 0;
+        }
+        double w1 = derived[k + W1];
+        if (w1 < 0) {
+            return derived[k + COVER];
+        }
+        Vec3 q = from.plus(d.times(plane)).minus(centre(x, y, z))
+                .minus(new Vec3(derived[k + BX], derived[k + BY], derived[k + BZ]));
+        Vec3 u = new Vec3(derived[k + UX], derived[k + UY], derived[k + UZ]);
+        double eps = 1e-6 * cell;
+        if (Math.abs(q.dot(u)) > w1 + eps) {
+            return 0;
+        }
+        if (dims == 3 && Math.abs(q.dot(planeNormal(k).cross(u))) > derived[k + W2] + eps) {
+            return 0;
+        }
+        return derived[k + COVER];
+    }
+
+    /**
      * The area of the plane {@code n·x = h} inside a cell centred on the origin (its length, in 2D): the polygon
      * where it cuts the cell's edges, ordered round its centroid.
      */
     private double sliceArea(Vec3 n, double h) {
+        List<Vec3> points = slice(n, h);
+        if (dims == 2) {
+            return points.size() < 2 ? 0 : points.get(0).minus(points.get(1)).length();
+        }
+        if (points.size() < 3) {
+            return 0;
+        }
+        Vec3 t1 = (Math.abs(n.x()) < 0.9 ? new Vec3(1, 0, 0) : new Vec3(0, 1, 0)).cross(n).normalize();
+        Vec3 t2 = n.cross(t1);
+        double[][] flat = new double[points.size()][];
+        for (int j = 0; j < flat.length; j++) {
+            flat[j] = new double[]{points.get(j).dot(t1), points.get(j).dot(t2)};
+        }
+        return area(flat);
+    }
+
+    /**
+     * The plane {@code n·x = h} inside a cell centred on the origin: in 3D the polygon where it cuts the cell's
+     * edges, in order round it; in 2D the two ends of the segment.
+     */
+    private List<Vec3> slice(Vec3 n, double h) {
         double a = cell / 2;
         int bits = dims == 3 ? 3 : 2;
         double eps = 1e-9 * cell;
@@ -406,16 +606,21 @@ public final class VexelField {
             }
         }
         if (dims == 2) {
-            double longest = 0;
+            Vec3 p0 = null, p1 = null;
+            double longest = -1;
             for (Vec3 p : points) {
                 for (Vec3 q : points) {
-                    longest = Math.max(longest, p.minus(q).length());
+                    if (p.minus(q).length() > longest) {
+                        longest = p.minus(q).length();
+                        p0 = p;
+                        p1 = q;
+                    }
                 }
             }
-            return longest;
+            return p0 == null ? List.of() : List.of(p0, p1);
         }
         if (points.size() < 3) {
-            return 0;
+            return points;
         }
         Vec3 centroid = Vec3.ZERO;
         for (Vec3 p : points) {
@@ -426,12 +631,42 @@ public final class VexelField {
         Vec3 t2 = n.cross(t1);
         points.sort((p, q) -> Double.compare(Math.atan2(p.minus(o).dot(t2), p.minus(o).dot(t1)),
                 Math.atan2(q.minus(o).dot(t2), q.minus(o).dot(t1))));
+        return points;
+    }
+
+    /** The area of a polygon in the plane, by the shoelace formula. */
+    private static double area(double[][] p) {
         double twice = 0;
-        for (int j = 0; j < points.size(); j++) {
-            Vec3 p = points.get(j).minus(o), q = points.get((j + 1) % points.size()).minus(o);
-            twice += p.dot(t1) * q.dot(t2) - p.dot(t2) * q.dot(t1);
+        for (int j = 0; j < p.length; j++) {
+            double[] a = p[j], b = p[(j + 1) % p.length];
+            twice += a[0] * b[1] - a[1] * b[0];
         }
         return Math.abs(twice) / 2;
+    }
+
+    /** The area of a convex polygon inside the box {@code |x| ≤ w1, |y| ≤ w2}, by clipping it to each side. */
+    private static double clippedArea(double[][] polygon, double w1, double w2) {
+        List<double[]> p = new ArrayList<>(Arrays.asList(polygon));
+        double[][] sides = {{1, 0, w1}, {-1, 0, w1}, {0, 1, w2}, {0, -1, w2}};   // a·x + b·y ≤ c
+        for (double[] s : sides) {
+            List<double[]> out = new ArrayList<>();
+            for (int j = 0; j < p.size(); j++) {
+                double[] a = p.get(j), b = p.get((j + 1) % p.size());
+                double fa = s[0] * a[0] + s[1] * a[1] - s[2], fb = s[0] * b[0] + s[1] * b[1] - s[2];
+                if (fa <= 0) {
+                    out.add(a);
+                }
+                if ((fa < 0) != (fb < 0) && fa != 0 && fb != 0) {
+                    double t = fa / (fa - fb);
+                    out.add(new double[]{a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t});
+                }
+            }
+            p = out;
+            if (p.size() < 3) {
+                return 0;
+            }
+        }
+        return area(p.toArray(double[][]::new));
     }
 
     private Vec3 corner(int bits, double a) {
@@ -533,6 +768,32 @@ public final class VexelField {
         }
         hm /= area;
         store(o, area / children, mean, hm, h2 / area - hm * hm, mat, am, a2, area);
+        // where the surface is, by the parallel-axis rule over the children's centroids and covariances
+        double[] fs = new double[3], ff = new double[6];
+        for (int k : kids) {
+            int i = k * f.stride;
+            double a = f.data[i + AREA];
+            if (a == 0) {
+                continue;
+            }
+            int cx = k % f.nx, cy = (k / f.nx) % f.ny, cz = k / (f.nx * f.ny);
+            double[] p = xyz(f.centre(cx, cy, cz).minus(c)
+                    .plus(new Vec3(f.data[i + FX], f.data[i + FY], f.data[i + FZ])));
+            for (int u = 0; u < 3; u++) {
+                fs[u] += a * p[u];
+                for (int v = u; v < 3; v++) {
+                    ff[COV[u][v]] += a * (f.cov(i, u, v) + p[u] * p[v]);
+                }
+            }
+        }
+        double[] m = {fs[0] / area, fs[1] / area, fs[2] / area};
+        double[] cov = new double[6];
+        for (int u = 0; u < 3; u++) {
+            for (int v = u; v < 3; v++) {
+                cov[COV[u][v]] = ff[COV[u][v]] / area - m[u] * m[v];
+            }
+        }
+        storeSurface(o, m, cov);
     }
 
     // ---- rays
@@ -571,7 +832,7 @@ public final class VexelField {
         walk(from, d, tMax, (x, y, z, t, exit) -> {
             int c = cellIndex(x, y, z), k = c * DERIVED;
             double plane = crossing(c, x, y, z, from, d, t, exit);
-            double flat = Double.isNaN(plane) ? 0 : derived[k + COVER];
+            double flat = flatChance(k, x, y, z, from, d, plane);
             double granular = 1 - Math.exp(-depth(c, x, y, z, from, d, t, exit));
             double entry = through(k, x, y, z, from, d, t, exit);
             double solid = Double.isNaN(entry) ? 0 : derived[k + FILL];
@@ -606,7 +867,7 @@ public final class VexelField {
             double best = Double.POSITIVE_INFINITY;
             boolean granular = false;
             double plane = crossing(c, x, y, z, from, d, t, exit);
-            if (!Double.isNaN(plane) && hash.u(x, y, z, bucket, VexelHash.FLAT) < derived[k + COVER]) {
+            if (hash.u(x, y, z, bucket, VexelHash.FLAT) < flatChance(k, x, y, z, from, d, plane)) {
                 best = plane;
             }
             double target = -Math.log(1 - hash.u(x, y, z, bucket, VexelHash.GRANULAR));

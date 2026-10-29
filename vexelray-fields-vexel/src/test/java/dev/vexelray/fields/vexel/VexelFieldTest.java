@@ -108,6 +108,62 @@ class VexelFieldTest {
         assertEquals(0, floor().vexel(1, 2, 3).occupancy(), 1e-9);
     }
 
+    /**
+     * A surface that spans its cells keeps each one's whole slice, so no crack opens along the walls between them:
+     * rays straight down a tilted plane, right along the cells' edges and through their corners, are all stopped.
+     */
+    @Test
+    void noCrackOpensBetweenCellsAlongTheirWalls() {
+        Vec3 tilt = new Vec3(1, 0.6, 2);
+        VexelField f = VexelField.bake(Solid.halfSpace(new Vec3(2, 2, 2), tilt), Vec3.ZERO, 0.5, 8, 8, 8, 6);
+        assertTrue(f.vexel(4, 4, 3).hasSurface());
+        assertNull(f.vexel(4, 4, 3).footprint(), "a plane spanning its cell is its whole slice");
+        assertNull(f.vexel(0, 0, 7).footprint(), "a cell with no surface has no footprint");
+        for (double x = 0.5; x < 4; x += 0.5) {
+            for (double y = 0.5; y < 4; y += 0.5) {
+                for (double[] at : new double[][]{{x, y}, {x + 0.25, y}, {x, y + 0.25}}) {
+                    double p = f.trace(new Vec3(at[0], at[1], 4.5), DOWN).probability();
+                    if (2 - (tilt.x() * (at[0] - 2) + tilt.y() * (at[1] - 2)) / tilt.z() > 0.1) {   // plane above z 0.1
+                        // not quite 1: the bake measures a plane's area up to 0.7% short of its slice, which makes
+                        // a cell a screen door of 0.993; a crack would let far more through
+                        assertTrue(p > 0.99, "a ray down at " + at[0] + ", " + at[1] + ": " + p);
+                    }
+                }
+            }
+        }
+    }
+
+    /** A turned cube, coarsened: its faces' caps meet at edges, and the plane's footprint keeps rays past them. */
+    @Test
+    void aTurnedCubeLeaksLittleWhenCoarse() {
+        double c = Math.cos(Math.toRadians(30)), s = Math.sin(Math.toRadians(30));
+        Solid cube = (x, y, z) -> {
+            double u = (x - 4) * c + (y - 4) * s, v = -(x - 4) * s + (y - 4) * c, w = z - 4;
+            double qx = Math.abs(u) - 2, qy = Math.abs(v) - 2, qz = Math.abs(w) - 2;
+            double out = Math.sqrt(Math.pow(Math.max(qx, 0), 2) + Math.pow(Math.max(qy, 0), 2)
+                    + Math.pow(Math.max(qz, 0), 2));
+            return -(out + Math.min(Math.max(qx, Math.max(qy, qz)), 0));
+        };
+        VexelField f = VexelField.bake(cube, Vec3.ZERO, 0.25, 32, 32, 32, 6).coarser().coarser().coarser().coarser();
+        double in = 0, out = 0;
+        int ni = 0, no = 0;
+        for (double x = 0.13; x < 8; x += 0.37) {
+            for (double y = 0.11; y < 8; y += 0.37) {
+                double r = Math.max(Math.abs((x - 4) * c + (y - 4) * s), Math.abs(-(x - 4) * s + (y - 4) * c));
+                double p = f.trace(new Vec3(x, y, -1), UP).probability();
+                if (r < 1.9) {
+                    in += p;
+                    ni++;
+                } else if (r > 2.1) {
+                    out += p;
+                    no++;
+                }
+            }
+        }
+        assertTrue(in / ni > 0.97, "inside " + in / ni);
+        assertTrue(out / no < 0.12, "outside " + out / no + "; 0.170 before footprints");
+    }
+
     /** The area-weighted mean granularity of the cells with surface. */
     private static double meanGranularity(VexelField f) {
         double sum = 0, weight = 0;
@@ -138,13 +194,14 @@ class VexelFieldTest {
 
     /**
      * At every level, rays straight down onto the sphere are stopped inside its outline and pass outside it. A cell
-     * holding a curved cap had its plane's coverage spread over the whole slice and let rays through the cap's solid.
+     * holding a curved cap needs both: the solid's ball to stop rays through the cap, and the plane's footprint to let
+     * rays past its edge go.
      */
     @Test
     void everyLevelKeepsTheOutline() {
         VexelField f = VexelField.bake(Solid.sphere(new Vec3(4, 4, 4), 3), Vec3.ZERO, 0.25, 32, 32, 32, 6);
-        // the most a level may stop outside the outline: what the plane's even coverage leaks past a cap's edge
-        double[] leak = {0.001, 0.001, 0.005, 0.05, 0.25, 0.08};
+        // the most a level may stop outside the outline; before footprints, 0.035 at cells of 2 and 0.239 at 4
+        double[] leak = {0.001, 0.001, 0.005, 0.015, 0.1, 0.08};
         for (int level = 0; level < leak.length; level++) {
             double in = 0, out = 0;
             int ni = 0, no = 0;

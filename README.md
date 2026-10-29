@@ -90,6 +90,12 @@ where it has one. A ray through that ball is stopped with the ball's fill (`soli
 would fill, `1` for a solid ball and toward `0` for a solid scattered thin, as foliage is, which should not turn
 opaque. Granularity then says what stopped it, the plane or the granular share.
 
+A plane's coverage applies only where its surface is: a box on the plane, from the surface's centroid and covariance
+(half-widths `√(3·variance)`, the box a uniform rectangle's moments give back exactly), grown until it holds the flat
+area within the plane's slice of the cell. Once it holds 85% of the slice it is taken as the whole slice, so a surface
+that spans its cell keeps every corner and no crack opens between neighbouring cells. Without the box, a cell holding
+a curved cap spread its coverage over the whole slice and stopped rays past the cap's edge.
+
 A sphere of radius 3, baked in cells of 0.25 and coarsened, with vertical rays over it: the mean chance of a stop for
 rays inside its outline (want 1) and outside it (want 0), and its mean granularity.
 
@@ -98,8 +104,8 @@ cell   granularity   inside   outside
 0.25   0.015         1.000    0.000
 0.50   0.034         1.000    0.000
 1      0.077         1.000    0.001
-2      0.149         0.988    0.035
-4      0.350         0.982    0.239
+2      0.149         0.987    0.009
+4      0.350         0.991    0.073
 8      1.000         1.000    0.067    one cell
 ```
 
@@ -110,9 +116,12 @@ the cell: a half-covered cell is wholly there or wholly not, from one bucket. Av
 with `trace` (`hashedCollisionsAverageToTheExpectedOutcome`).
 
 Known:
-* A plane's coverage is spread evenly over its slice of the cell. A cell holding a curved piece (each cell at size 4
-  above holds one octant's cap) covers only part of that slice, so rays past the cap's edge are stopped as if by a
-  screen door: the 0.239 outside the outline. The solid's ball fixed the opposite case, rays through the cap.
+* The 85% at which a box becomes the whole slice is tuned on one sphere: at 80% the leak came back at cells of 2, at
+  90% cracks opened at cells of 1. On a smaller sphere off the grid and on a cube turned 30° it held (leak at cells of
+  4: 0.124 → 0.047 and 0.170 → 0.099), but cost the small sphere a little inside at cells of 2 (0.994 → 0.981).
+* A box is a rectangle's moments: a cap shaped otherwise (a curved triangle) still leaks a little past its corners,
+  the 0.073 above.
+* The bake measures a plane's area up to 0.7% short of its slice, so a wall cell is a screen door of about 0.993.
 * One Gaussian per cell: solid in several clumps (eight grains in a cell's corners) is put in one blob between them,
   and a ray through the empty middle is stopped by the granular share about 30% of the time.
 * The Gaussian's tails past the cell's walls are lost, so a cell whose solid is spread wide undercounts its rate.
