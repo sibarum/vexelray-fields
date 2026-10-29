@@ -8,7 +8,7 @@ import dev.vexelray.fields.shape.Vec2;
 
 /**
  * What a vexel field is baked from: a signed distance, positive inside as everywhere in this library, and what the
- * surface is like at a point on it. Need not be exact: the bake reads the distance only near the surface, and only
+ * surface is made of at a point on it. Need not be exact: the bake reads the distance only near the surface, and only
  * its zero and its gradient there matter.
  */
 public interface Solid {
@@ -16,17 +16,27 @@ public interface Solid {
     /** The signed distance at {@code (x, y, z)}, positive inside. */
     double distance(double x, double y, double z);
 
+    /** How many materials {@link #material} chooses among. One by default. */
+    default int materials() {
+        return 1;
+    }
+
+    /** The material of the surface at {@code p}, a point on it whose outward normal is {@code normal}. */
+    default int material(Vec3 p, Vec3 normal) {
+        return 0;
+    }
+
+    /** How many continuous attributes {@link #attributes(Vec3, Vec3)} gives. None by default. */
+    default int attributes() {
+        return 0;
+    }
+
     /**
-     * The surface's attributes at {@code p}, a point on it, whose outward normal is {@code normal}: albedo, roughness,
-     * material, whatever the field is to carry, {@link #attributes()} of them. None by default.
+     * Continuous attributes of the surface at {@code p}, beside its material: a tint, a wetness, whatever varies
+     * smoothly. A field keeps their mean and variance.
      */
     default float[] attributes(Vec3 p, Vec3 normal) {
         return new float[0];
-    }
-
-    /** How many attributes {@link #attributes(Vec3, Vec3)} gives. */
-    default int attributes() {
-        return 0;
     }
 
     /** A sphere of {@code radius} round {@code centre}. */

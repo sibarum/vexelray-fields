@@ -3,9 +3,9 @@ package dev.vexelray.fields.vexel;
 import java.util.List;
 
 /**
- * Where a ray through a {@link VexelField} may be stopped: one {@link Hit} per cell it may stop in, nearest first,
- * each with the probability that it is stopped there and not before. Their sum is the chance it is stopped at all;
- * the rest goes through.
+ * Where a ray through a {@link VexelField} may be stopped, in expectation: one {@link Hit} per cell it may stop in,
+ * nearest first, each with the probability that it is stopped there and not before. Their sum is the chance it is
+ * stopped at all; the rest goes through. What a hashed {@link Collision} converges to, averaged over seeds.
  */
 public record RayHits(List<Hit> hits) {
 
@@ -13,13 +13,14 @@ public record RayHits(List<Hit> hits) {
      * One cell the ray may stop in.
      *
      * @param probability that the ray stops here, having got here
-     * @param t           the expected distance along the ray of the stop, where it crosses the cell's mean surface
+     * @param t           the expected distance along the ray of the stop: the plane's crossing and the granular
+     *                    share's mean, weighted by their chances
      * @param point       the point at {@code t}
-     * @param normal      the cell's mean outward normal, unit length
-     * @param roughness   the cell's {@link Vexel#roughness()}
-     * @param attributes  the surface's mean attributes there
+     * @param normal      the cell's plane's outward normal, unit length
+     * @param granularity the cell's {@link Vexel#granularity()}
+     * @param materials   the chance of each material, given a stop here
      */
-    public record Hit(double probability, double t, Vec3 point, Vec3 normal, double roughness, float[] attributes) {
+    public record Hit(double probability, double t, Vec3 point, Vec3 normal, double granularity, float[] materials) {
     }
 
     public RayHits {
@@ -43,20 +44,5 @@ public record RayHits(List<Hit> hits) {
             t += h.probability() * h.t();
         }
         return p == 0 ? Double.POSITIVE_INFINITY : t / p;
-    }
-
-    /**
-     * One outcome, chosen by {@code u} uniform in {@code [0, 1)}: the hit whose share of the probability {@code u}
-     * falls in, or null for a ray that goes through. What a path tracer draws per ray.
-     */
-    public Hit sample(double u) {
-        double acc = 0;
-        for (Hit h : hits) {
-            acc += h.probability();
-            if (u < acc) {
-                return h;
-            }
-        }
-        return null;
     }
 }

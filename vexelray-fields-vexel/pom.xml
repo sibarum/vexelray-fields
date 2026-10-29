@@ -15,7 +15,7 @@
 
     <name>vexelray-fields-vexel</name>
     <description>
-        Experimental. Vexel fields: per cell, the probability of a hit and the moments of the surface hit, which filter and compose where distances do not.
+        Experimental. Vexel fields: per cell, a collision rate per distance, a granularity from smoke to surface, and the chance of each material.
     </description>
 
     <dependencies>

@@ -20,8 +20,8 @@ vexelray-fields-sdf     one true distance per texel: ShapeSdf from a shape's edg
                         exact Euclidean distance transform.
 vexelray-fields-msdf    three distances whose median is the edge (Chlumský's MSDF), and MTSDF with the true distance
                         in a fourth: edge colouring, generation, sign and clash correction.
-vexelray-fields-vexel   experimental. Vexel fields: baked from any signed distance, filtered by combining moments,
-                        and traced by rays for the probability of a hit.
+vexelray-fields-vexel   experimental. Vexel fields: collision rate, granularity and materials per cell, filtered by
+                        combining moments, and collided with by hashed rays that hold still frame to frame.
 ```
 
 ### Conventions
@@ -58,27 +58,41 @@ instead), and the ink-trap colouring.
 
 ### Vexel fields (experimental)
 
-A distance field says where one surface is, and averaging distances (a mip level, a texel seen from far away) gives
-the distance to no surface at all. A vexel field keeps, per cell, statistics that average exactly:
+A vexel field says, per cell, how likely a ray is to collide there and with what:
 
 | per cell | what it is |
 |---|---|
-| occupancy | the share of the cell that is solid |
-| surface density | surface area per unit volume (in 2D, outline length per unit area) |
-| mean normal `n̄` | the area-weighted mean outward normal; `1 - |n̄|` is the cell's roughness |
-| offset mean, variance | where the surface sits along `n̄` from the cell's centre, and how far it strays |
-| attribute mean, variance | anything the solid gives per surface point: albedo, material, roughness |
+| granularity | `1` is smoke, material building up over distance with no particular normal; `0` is a surface, where the collision is at one point with one normal. Between, the cell is both. |
+| rate | collisions per unit distance travelled, for the granular share |
+| coverage, plane | the flat share: one plane that stops a ray crossing it inside the cell with this chance (`1` a wall, `0.5` a screen door) |
+| materials | the chance of each material, given a collision |
 
-`coarser()` combines eight cells into one (four in 2D) by moments, never by resampling: volume and area are kept
-exactly, and the mean normal of surfaces facing different ways shortens, which is roughness appearing where detail
-is lost. A sphere coarsened to one cell has a mean normal of nearly zero.
+The two shares compete along a ray: the granular share's collision falls where an exponential of its rate puts it,
+the plane's where the ray crosses it, and whichever comes first is the collision. The rate is per distance because
+granular material is met more the further a ray goes through it; the plane's chance is per crossing because a surface
+is met once by any ray that crosses it, at any angle.
 
-A ray asks each cell it crosses for the probability that it is stopped there. By the Crofton formula a ray crossing
-length `l` of a cell meets on average `N = S · l · E|n·ω|` pieces of surface; the normals are modelled as a mixture,
-a share `|n̄|` facing along `n̄` and the rest every way alike. Under `HitModel.SHEET` the facing share is one sheet
-where the offset moments put it, so a flat surface stops every ray that crosses it, at any angle, and no other; the
-rest stops a ray with probability `min(1, N)`. Under `HitModel.SCATTERED` it is all `1 - exp(-N)`, a participating
-medium's transmittance. `RayHits.sample(u)` draws one outcome, for a path tracer.
+All of that is derived from moments the cell keeps underneath: how much of it is solid, its surface area, the
+area-weighted mean of the surface's normals, where the surface sits along that mean and how far it strays, the share
+of each material, and the mean and variance of any continuous attributes. Moments average exactly, which distances do
+not, so `coarser()` combines eight cells into one (four in 2D) by moments, never by resampling: volume, area and
+material shares are kept exactly, and detail lost to distance turns into granularity. A sphere of radius 3 baked in
+cells of 0.25:
 
-This is one reading of the idea, to be argued with: the cell's layout, both hit models and the bake are expected to
-change.
+```
+cell 0.25: mean granularity 0.015    cell 2.00: mean granularity 0.149
+cell 0.50: mean granularity 0.034    cell 4.00: mean granularity 0.350
+cell 1.00: mean granularity 0.077    cell 8.00: mean granularity 1.000 (one cell: a small cloud)
+```
+
+Two ways to ask a ray. `trace` gives the expected outcome, the chance of a collision in each cell. `collide` gives one
+outcome, every value it draws a `VexelHash` of the cell, the ray's direction quantized to an angle bucket, a seed and
+what is being decided, so the outcome holds still from frame to frame while the view stays in its bucket. The grain is
+the cell: a half-covered cell is wholly there or wholly not, from one bucket. Averaged over seeds, `collide` agrees
+with `trace` (`hashedCollisionsAverageToTheExpectedOutcome`).
+
+Known: a granular cell treats its surface as independent pieces, so a solid object seen coarsely turns see-through:
+the sphere above, as its one cell, stops a ray through its middle with a chance of 0.59, not 1. The cell's occupancy
+says it is solid; using that is the next question.
+
+Experimental: the cell's layout, the derivation and the bake are expected to change.

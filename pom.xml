@@ -28,8 +28,8 @@
              MTSDF, those three with a true distance in a fourth. Edge colouring, generation and clash correction, in
              Java, where the stack's fonts go through msdf-atlas-gen today. -->
         <module>vexelray-fields-msdf</module>
-        <!-- Experimental. Vexel fields: per cell, the probability a ray is stopped there and the moments of the surface
-             it stops on (normal, offset, attributes), which average correctly where distances do not. -->
+        <!-- Experimental. Vexel fields: per cell, a collision rate per distance, a granularity (smoke to surface) and
+             the chance of each material, derived from moments that average where distances do not. -->
         <module>vexelray-fields-vexel</module>
     </modules>
 

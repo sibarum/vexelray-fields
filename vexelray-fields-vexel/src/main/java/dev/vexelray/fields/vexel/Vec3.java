@@ -21,6 +21,10 @@ public record Vec3(double x, double y, double z) {
         return x * o.x + y * o.y + z * o.z;
     }
 
+    public Vec3 cross(Vec3 o) {
+        return new Vec3(y * o.z - z * o.y, z * o.x - x * o.z, x * o.y - y * o.x);
+    }
+
     public double length() {
         return Math.sqrt(dot(this));
     }
