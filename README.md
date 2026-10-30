@@ -20,6 +20,8 @@ vexelray-fields-sdf     one true distance per texel: ShapeSdf from a shape's edg
                         exact Euclidean distance transform.
 vexelray-fields-msdf    three distances whose median is the edge (Chlumský's MSDF), and MTSDF with the true distance
                         in a fourth: edge colouring, generation, sign and clash correction.
+vexelray-fields-art     art made into any of the three: an SVG (drawn here, in Java), a black-and-white raster, or one
+                        channel of a raster, such as its transparency. ArtField is the front door.
 vexelray-fields-vexel   experimental. Vexel fields: collision rate, granularity and materials per cell, filtered by
                         combining moments, and collided with by hashed rays that hold still frame to frame.
 ```
@@ -55,6 +57,51 @@ The MSDF generator is msdfgen's legacy pipeline: simple edge colouring, per-chan
 its pseudo-distance, then clash correction. Not yet here: msdfgen's newer error correction (which checks
 interpolated values, not just neighbours), the overlapping-contour combiner (overlaps are handled by the sign pass
 instead), and the ink-trap colouring.
+
+### Art: SVG, black and white, a channel
+
+What `vexelray-gui`'s icon bake does through imagelib, here with nothing native. The art is fitted into
+`width × height` texels with its aspect kept and centred, with `spread` texels of margin round it, as `DistanceField`
+and the icon atlases lay a field out.
+
+```java
+Svg icon = Svg.read(Path.of("accept-mask.svg"));
+Field sdf = ArtField.of(icon, FieldKind.SDF, 64, 64, 16);                    // where it is opaque
+
+Raster scan = Raster.read(Path.of("logo.png"));                               // ImageIO: PNG, JPEG, BMP, GIF
+Field ink   = ArtField.of(scan, Channel.LUMINANCE, false, FieldKind.SDF, 48, 48, 6);   // the dark, over white
+Field cut   = ArtField.of(scan, Channel.ALPHA, true, FieldKind.MTSDF, 48, 48, 6);      // the transparent part
+Field red   = ArtField.of(scan, Channel.RED, false, FieldKind.SDF, 48, 48, 6);         // one channel of a texture
+```
+
+| Channel | The shape is |
+|---|---|
+| `AUTO` | `ALPHA` if any pixel is less than opaque, else `LUMINANCE`; always `ALPHA` for an SVG |
+| `ALPHA` | where it is opaque, whatever its colour |
+| `LUMINANCE` | where it is dark, laid over white first, so a transparent background is background |
+| `RED`, `GREEN`, `BLUE` | where that channel is high, alpha ignored |
+
+`invert` takes the other part. A raster is read between its pixels before the shape is cut at one half, so a 32 px
+drawing becomes a clean-edged shape rather than its staircase.
+
+Two routes, by what the art has. An SVG of opaque fills alone whose fills do not overlap has its outline read exactly
+(`Svg.outline`), and its SDF is `ShapeSdf`'s, its MSDF and MTSDF `Msdf`'s, corners sharp. Anything else is a mask
+drawn at 8 pixels a texel and made into a true distance by `MaskSdf`; a mask has no edges to colour, so its MSDF is
+that one distance in all three channels and its MTSDF in all four, the layout a multi-channel reader expects with an
+SDF's round corners. That is what the framework's icons are today.
+
+`Svg` draws fills, strokes (caps, joins, miter limits, dashes), masks and clips in user space, opacity, transforms,
+`use`, and properties as attributes or in `style`. Text is left out, as the icon bake leaves it out of a silhouette. A
+gradient paints as its stops' mean colour and opacity, so the area it covers is exact read by alpha. Images, patterns,
+filters, markers, style sheets and nested `svg` are refused by name rather than drawn wrongly. A stroke under a
+transform that stretches one way more than the other is drawn at its mean width.
+
+Measured against the framework: the 125 large icons of `vexelray-gui-icons`, baked here at its cell (64 + 16), differ
+from its atlas by 0.02 of 255 per texel on average, 0.18 in the worst cell. Of the 1,291 SVGs in `vexelray-icons`
+and `vexelray-gui-icons`, every one that is a drawing converts; the one refused is a sprite sheet of symbols.
+
+Not here: tracing a raster into outlines (so a raster's or a stroked SVG's MSDF has sharp corners), and stroking
+into outlines for the same reason.
 
 ### Vexel fields (experimental)
 

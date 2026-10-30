@@ -97,7 +97,38 @@ class ShapeTest {
         Edge.Quadratic t = (Edge.Quadratic) c.edges().get(1);
         assertEquals(new Vec2(25, 15), t.p1());   // the first control point reflected
         assertEquals(new Vec2(30, 10), t.p2());
-        assertThrows(IllegalArgumentException.class, () -> PathData.parse("M0 0 A5 5 0 0 1 10 0"));
+        assertThrows(IllegalArgumentException.class, () -> PathData.parse("M0 0 A5 5 0 2 1 10 0"));
+    }
+
+    @Test
+    void arcsAreOnTheirEllipse() {
+        // a half circle of radius 5 over (5, 0), sweeping through y -5; its flags run into the numbers after them
+        Path p = PathData.path("M0 0 a5 5 0 0110 0");
+        Path.Subpath s = p.subpaths().getFirst();
+        assertFalse(s.closed());
+        assertEquals(2, s.edges().size());
+        for (Edge e : s.edges()) {
+            for (int i = 0; i <= 20; i++) {
+                assertEquals(5, e.point(i / 20.0).minus(new Vec2(5, 0)).length(), 5 * 3e-4);
+            }
+        }
+        assertEquals(new Vec2(5, -5).x(), s.edges().getFirst().end().x(), 1e-9);
+        assertEquals(-5, s.edges().getFirst().end().y(), 1e-9);
+        assertEquals(new Vec2(10, 0), s.edges().getLast().end());
+        // a radius too small to reach is grown until it does: still a half circle
+        Path small = PathData.path("M0 0 A1 1 0 0 0 10 0");
+        assertEquals(5, small.subpaths().getFirst().edges().getFirst().end().y(), 1e-9);
+    }
+
+    @Test
+    void pathsKeepWhichSubpathsWereClosed() {
+        Path p = PathData.path("M0 0 L10 0 L10 10 Z L0 10 M20 20 M30 30 L40 30");
+        assertEquals(4, p.subpaths().size());
+        assertTrue(p.subpaths().get(0).closed());
+        assertFalse(p.subpaths().get(1).closed());   // drawing on after Z starts again where it began
+        assertEquals(new Vec2(0, 0), p.subpaths().get(1).start());
+        assertTrue(p.subpaths().get(2).edges().isEmpty());   // a move alone, a dot
+        assertEquals(3, p.shape().contours().size());   // the dot has nothing to fill
     }
 
     @Test

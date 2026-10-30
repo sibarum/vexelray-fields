@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>dev.vexelray.fields</groupId>
+        <artifactId>vexelray-fields</artifactId>
+        <version>0.2.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>vexelray-fields-art</artifactId>
+    <packaging>jar</packaging>
+
+    <name>vexelray-fields-art</name>
+    <description>
+        Art made into fields: an SVG, a black-and-white raster, or one channel of a raster (its transparency, say), as
+        an SDF, an MSDF or an MTSDF. SVG is drawn here, in Java, and images are read with the JDK's own ImageIO.
+    </description>
+
+    <dependencies>
+        <dependency>
+            <groupId>dev.vexelray.fields</groupId>
+            <artifactId>vexelray-fields-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>dev.vexelray.fields</groupId>
+            <artifactId>vexelray-fields-sdf</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>dev.vexelray.fields</groupId>
+            <artifactId>vexelray-fields-msdf</artifactId>
+        </dependency>
+    </dependencies>
+</project>

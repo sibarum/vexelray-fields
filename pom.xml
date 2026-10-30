@@ -28,6 +28,10 @@
              MTSDF, those three with a true distance in a fourth. Edge colouring, generation and clash correction, in
              Java, where the stack's fonts go through msdf-atlas-gen today. -->
         <module>vexelray-fields-msdf</module>
+        <!-- Art made into fields: an SVG (drawn here, in Java: fills, strokes, masks, clips), a black-and-white raster,
+             or one channel of a raster, as any of the three kinds. What vexelray-gui's icon bake does through imagelib,
+             with nothing native. -->
+        <module>vexelray-fields-art</module>
         <!-- Experimental. Vexel fields: per cell, a collision rate per distance, a granularity (smoke to surface) and
              the chance of each material, derived from moments that average where distances do not. -->
         <module>vexelray-fields-vexel</module>
@@ -56,6 +60,11 @@
             <dependency>
                 <groupId>dev.vexelray.fields</groupId>
                 <artifactId>vexelray-fields-msdf</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>dev.vexelray.fields</groupId>
+                <artifactId>vexelray-fields-art</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>

@@ -1,9 +1,9 @@
 package dev.vexelray.fields.shape;
 
 /**
- * SVG path data ({@code d="M10 10 L20 10 ..."}) as a {@link Shape}: moves, lines, horizontal and vertical lines,
- * quadratic and cubic curves with their smooth forms, and closes, absolute and relative. Arcs are refused: an icon
- * with one goes through its rasteriser and {@code MaskSdf} instead. Coordinates are kept as written, y down.
+ * SVG path data ({@code d="M10 10 L20 10 ..."}) as a {@link Path} or a {@link Shape}: moves, lines, horizontal and
+ * vertical lines, quadratic and cubic curves with their smooth forms, elliptical arcs (as cubics), and closes, absolute
+ * and relative. Coordinates are kept as written, y down.
  */
 public final class PathData {
 
@@ -14,12 +14,18 @@ public final class PathData {
         this.s = s;
     }
 
+    /** The fill of {@code d}, every subpath closed. */
     public static Shape parse(String d) {
+        return path(d).shape();
+    }
+
+    /** {@code d} as drawn, open subpaths left open: what a stroke follows. */
+    public static Path path(String d) {
         return new PathData(d).read();
     }
 
-    private Shape read() {
-        Shape.Builder b = Shape.builder();
+    private Path read() {
+        Path.Builder b = Path.builder();
         char cmd = 0;
         Vec2 ctrl = null;   // the last curve's second control point, for S and T
         char last = 0;
@@ -67,11 +73,15 @@ public final class PathData {
                     b.cubicTo(c1.x(), c1.y(), c2x, c2y, ox + num(), oy + num());
                     ctrl = new Vec2(c2x, c2y);
                 }
+                case 'A' -> {
+                    double rx = num(), ry = num(), rotation = num();
+                    boolean large = flag(), sweep = flag();
+                    b.arcTo(rx, ry, rotation, large, sweep, ox + num(), oy + num());
+                }
                 case 'Z' -> {
                     b.close();
                     cmd = 0;
                 }
-                case 'A' -> throw error("arcs are not supported");
                 default -> throw error("unknown command '" + cmd + "'");
             }
             last = cmd == 0 ? 'Z' : cmd;
@@ -83,6 +93,15 @@ public final class PathData {
         while (i < s.length() && (Character.isWhitespace(s.charAt(i)) || s.charAt(i) == ',')) {
             i++;
         }
+    }
+
+    /** An arc's flag: one digit, which may run straight into what follows ({@code a5 5 0 016 0}). */
+    private boolean flag() {
+        skip();
+        if (i < s.length() && (s.charAt(i) == '0' || s.charAt(i) == '1')) {
+            return s.charAt(i++) == '1';
+        }
+        throw error("an arc's flag, 0 or 1, expected");
     }
 
     private double num() {

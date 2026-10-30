@@ -1,5 +1,7 @@
 package dev.vexelray.fields.shape;
 
+import java.util.function.UnaryOperator;
+
 /**
  * One piece of a contour: a straight line, or a quadratic or cubic Bézier curve, run from {@code t = 0} to
  * {@code t = 1}. Its signed distances are msdfgen's, so a field made here agrees with one made there.
@@ -32,6 +34,12 @@ public sealed interface Edge permits Edge.Line, Edge.Quadratic, Edge.Cubic {
     double[] yTurns();
 
     Edge reversed();
+
+    /**
+     * The edge with every point, ends and control points alike, put through {@code f}. A curve is the same curve of
+     * the mapped points only when {@code f} is affine, as a transform is.
+     */
+    Edge mapped(UnaryOperator<Vec2> f);
 
     /** The edge in three, at a third and two thirds: what a contour of one edge is coloured by. */
     Edge[] thirds();
@@ -111,6 +119,11 @@ public sealed interface Edge permits Edge.Line, Edge.Quadratic, Edge.Cubic {
         @Override
         public Edge reversed() {
             return new Line(p1, p0);
+        }
+
+        @Override
+        public Edge mapped(UnaryOperator<Vec2> f) {
+            return new Line(f.apply(p0), f.apply(p1));
         }
 
         @Override
@@ -206,6 +219,11 @@ public sealed interface Edge permits Edge.Line, Edge.Quadratic, Edge.Cubic {
         @Override
         public Edge reversed() {
             return new Quadratic(p2, p1, p0);
+        }
+
+        @Override
+        public Edge mapped(UnaryOperator<Vec2> f) {
+            return new Quadratic(f.apply(p0), f.apply(p1), f.apply(p2));
         }
 
         @Override
@@ -335,6 +353,11 @@ public sealed interface Edge permits Edge.Line, Edge.Quadratic, Edge.Cubic {
         @Override
         public Edge reversed() {
             return new Cubic(p3, p2, p1, p0);
+        }
+
+        @Override
+        public Edge mapped(UnaryOperator<Vec2> f) {
+            return new Cubic(f.apply(p0), f.apply(p1), f.apply(p2), f.apply(p3));
         }
 
         @Override
