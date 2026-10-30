@@ -39,6 +39,11 @@ public interface Solid {
         return new float[0];
     }
 
+    /** No solid anywhere: for a field of smoke alone. */
+    static Solid empty() {
+        return (x, y, z) -> -1e9;
+    }
+
     /** A sphere of {@code radius} round {@code centre}. */
     static Solid sphere(Vec3 centre, double radius) {
         return (x, y, z) -> radius - new Vec3(x, y, z).minus(centre).length();

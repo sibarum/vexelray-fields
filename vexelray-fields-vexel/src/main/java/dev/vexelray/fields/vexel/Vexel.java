@@ -16,6 +16,7 @@ package dev.vexelray.fields.vexel;
  *
  * @param granularity       the granular share, {@code 0..1}: {@code 0} one flat patch, {@code 1} smoke
  * @param rate              collisions per unit distance in the granular share, on average over the cell
+ * @param smoke             collisions per unit distance in the cell's smoke, the medium baked into it, evenly
  * @param normal            the plane's outward unit normal, pointing out of the solid; zero where there is no surface
  * @param offset            the plane's distance along {@code normal} from the cell's centre
  * @param footprint         where on the plane the solid's face lies; null for the plane's whole slice of the cell
@@ -31,7 +32,7 @@ package dev.vexelray.fields.vexel;
  * @param attributeMean     the area-weighted mean of each continuous attribute
  * @param attributeVariance and its variance
  */
-public record Vexel(double granularity, double rate, Vec3 normal, double offset, Footprint footprint,
+public record Vexel(double granularity, double rate, double smoke, Vec3 normal, double offset, Footprint footprint,
                    float[] materials, double occupancy, Vec3 solidCentroid, double solidSpread, double solidFill,
                    double surfaceDensity, Vec3 meanNormal, double offsetVariance,
                    float[] attributeMean, float[] attributeVariance) {

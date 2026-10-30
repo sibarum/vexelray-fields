@@ -10,17 +10,28 @@ import java.util.List;
 public record RayHits(List<Hit> hits) {
 
     /**
-     * One cell the ray may stop in.
+     * One cell the ray may stop in. A renderer compositing the hits front to back, each shaded and weighted by its
+     * probability, the background by what is left, draws the field with its opacity: smoke as thin as it is, rather
+     * than one hashed outcome.
      *
-     * @param probability that the ray stops here, having got here
+     * @param probability that the ray stops here and not before
      * @param t           the expected distance along the ray of the stop: the plane's crossing and the granular
      *                    share's mean, weighted by their chances
      * @param point       the point at {@code t}
-     * @param normal      the cell's plane's outward normal, unit length
+     * @param normal      the outward normal of the face a flat stop enters by, unit length
      * @param granularity the cell's {@link Vexel#granularity()}
-     * @param materials   the chance of each material, given a stop here
+     * @param smoke       the share of this stop that is the smoke's, {@code 0..1}
+     * @param grains      the share that is grains of solid, a granular stop with no normal; the rest is flat, on
+     *                    {@code normal}
+     * @param materials   the chance of each material, given a stop here on the solid
      */
-    public record Hit(double probability, double t, Vec3 point, Vec3 normal, double granularity, float[] materials) {
+    public record Hit(double probability, double t, Vec3 point, Vec3 normal, double granularity, double smoke,
+                      double grains, float[] materials) {
+
+        /** The share of this stop that is a flat face: what is neither smoke nor grains. */
+        public double flat() {
+            return Math.max(0, 1 - smoke - grains);
+        }
     }
 
     public RayHits {

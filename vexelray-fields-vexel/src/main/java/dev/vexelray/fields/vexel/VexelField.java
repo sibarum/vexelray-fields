@@ -44,13 +44,13 @@ public final class VexelField {
 
     /** The moments: what is kept, baked and combined. */
     private static final int OCC = 0, AREA = 1, NX = 2, NY = 3, NZ = 4, H_MEAN = 5, H_VAR = 6,
-            SX = 7, SY = 8, SZ = 9, S_VAR = 10, FX = 11, FY = 12, FZ = 13, F_COV = 14, MAT = 20;
+            SX = 7, SY = 8, SZ = 9, S_VAR = 10, FX = 11, FY = 12, FZ = 13, F_COV = 14, EXT = 20, MAT = 21;
     /** The order a covariance's six terms are kept in, after {@link #F_COV}. */
     private static final int[][] COV = {{0, 3, 4}, {3, 1, 5}, {4, 5, 2}};
     /** What is derived from them, per cell. */
     private static final int RATE = 0, HALF = 1, GRAN = 2, PX = 3, PY = 4, PZ = 5, PH = 6, GX = 7, GY = 8, GZ = 9,
             G_VAR = 10, BALL = 11, FILL = 12, BX = 13, BY = 14, BZ = 15, UX = 16, UY = 17, UZ = 18, W1 = 19, W2 = 20,
-            DEPTH = 21, DERIVED = 22;
+            DEPTH = 21, MEDIUM = 22, DERIVED = 23;
 
     private final int dims;
     private final Vec3 origin;
@@ -62,6 +62,8 @@ public final class VexelField {
     private final int stride;
     private final float[] data;
     private final float[] derived;
+    /** The material a stop in the medium hits. */
+    private int mediumMaterial;
 
     private VexelField(int dims, Vec3 origin, double cell, int nx, int ny, int nz, int materials, int attributes) {
         if (cell <= 0 || nx <= 0 || ny <= 0 || nz <= 0 || materials <= 0 || attributes < 0) {
@@ -89,8 +91,19 @@ public final class VexelField {
      * for a flat surface): each piece of surface belongs to one cell, even where it lies on a face between two.
      */
     public static VexelField bake(Solid solid, Vec3 origin, double cell, int nx, int ny, int nz, int samples) {
+        return bake(solid, null, origin, cell, nx, ny, nz, samples);
+    }
+
+    /**
+     * {@link #bake(Solid, Vec3, double, int, int, int, int)} with smoke: {@code medium}'s density averaged over each
+     * cell's samples, a collision rate the cell's granular share adds to its own. Either may be absent:
+     * {@link Solid#empty()} for smoke alone, null for no smoke.
+     */
+    public static VexelField bake(Solid solid, Medium medium, Vec3 origin, double cell, int nx, int ny, int nz,
+                                  int samples) {
         VexelField f = new VexelField(3, origin, cell, nx, ny, nz, solid.materials(), solid.attributes());
-        f.bakeAll(solid, samples);
+        f.mediumMaterial = medium == null ? 0 : medium.material();
+        f.bakeAll(solid, medium, samples);
         return f;
     }
 
@@ -102,7 +115,7 @@ public final class VexelField {
                                     int samples) {
         VexelField f = new VexelField(2, new Vec3(originX, originY, -cell / 2), cell, nx, ny, 1, solid.materials(),
                 solid.attributes());
-        f.bakeAll(solid, samples);
+        f.bakeAll(solid, null, samples);
         return f;
     }
 
@@ -155,7 +168,7 @@ public final class VexelField {
         Vexel.Footprint footprint = derived[k + W1] < 0 ? null : new Vexel.Footprint(
                 new Vec3(derived[k + BX], derived[k + BY], derived[k + BZ]),
                 new Vec3(derived[k + UX], derived[k + UY], derived[k + UZ]), derived[k + W1], derived[k + W2]);
-        return new Vexel(derived[k + GRAN], derived[k + RATE],
+        return new Vexel(derived[k + GRAN], derived[k + RATE], derived[k + MEDIUM],
                 new Vec3(derived[k + PX], derived[k + PY], derived[k + PZ]), derived[k + PH], footprint,
                 Arrays.copyOfRange(data, i + MAT, i + MAT + materials),
                 data[i + OCC], new Vec3(data[i + SX], data[i + SY], data[i + SZ]), data[i + S_VAR], derived[k + FILL],
@@ -196,14 +209,14 @@ public final class VexelField {
     private record Sample(double w, Vec3 at, Vec3 normal) {
     }
 
-    private void bakeAll(Solid solid, int samples) {
+    private void bakeAll(Solid solid, Medium medium, int samples) {
         if (samples <= 0) {
             throw new IllegalArgumentException("a bake of " + samples + " samples a side");
         }
         IntStream.range(0, ny * nz).parallel().forEach(row -> {
             int y = row % ny, z = row / ny;
             for (int x = 0; x < nx; x++) {
-                bakeCell(solid, samples, x, y, z);
+                bakeCell(solid, medium, samples, x, y, z);
                 derive(cellIndex(x, y, z));
             }
         });
@@ -213,12 +226,12 @@ public final class VexelField {
      * One cell, sampled on a grid that runs a sample past it each way: the samples inside measure how much of it is
      * solid, and every sample near the surface, inside or just outside, offers the cell the surface point at its foot.
      */
-    private void bakeCell(Solid solid, int s, int cx, int cy, int cz) {
+    private void bakeCell(Solid solid, Medium medium, int s, int cx, int cy, int cz) {
         double h = cell / s;
         double sampleVolume = Math.pow(h, dims);
         double x0 = origin.x() + cx * cell, y0 = origin.y() + cy * cell, z0 = origin.z() + cz * cell;
         int kFrom = dims == 3 ? -1 : 0, kTo = dims == 3 ? s : 0;
-        double inside = 0;
+        double inside = 0, extinction = 0;
         Vec3 solidSum = Vec3.ZERO;
         double solidSquares = 0;
         Vec3 c = centre(cx, cy, cz);
@@ -233,6 +246,9 @@ public final class VexelField {
                     Vec3 n = Math.abs(d) < h ? gradient(solid, x, y, z, h * 0.25).times(-1).normalize() : Vec3.ZERO;
                     boolean own = i >= 0 && i < s && j >= 0 && j < s && (dims == 2 || (k >= 0 && k < s));
                     if (own) {
+                        if (medium != null) {
+                            extinction += medium.density(x, y, z);
+                        }
                         double w = Math.clamp(0.5 + d / h, 0, 1);   // the share of the sample's slab that is solid
                         if (w > 0) {
                             // a slab cut by the surface: its solid part sits on the inside, (1 - w) h / 2 off centre,
@@ -255,6 +271,7 @@ public final class VexelField {
         }
         int i = cellIndex(cx, cy, cz) * stride;
         data[i + OCC] = (float) (inside / (s * s * (dims == 3 ? s : 1)));
+        data[i + EXT] = (float) (extinction / (s * s * (dims == 3 ? s : 1)));
         if (inside > 0) {
             Vec3 centroid = solidSum.times(1 / inside);
             storeSolid(i, centroid, solidSquares / inside - centroid.dot(centroid));
@@ -384,8 +401,10 @@ public final class VexelField {
         int i = c * stride, k = c * DERIVED;
         Arrays.fill(derived, k, k + DERIVED, 0f);
         derived[k + W1] = -1;   // no footprint: the half-space, if any, fills the slice
+        derived[k + MEDIUM] = data[i + EXT];   // smoke: its rate, spread evenly over the cell
         double s = data[i + AREA];
         if (s == 0) {
+            derived[k + GRAN] = data[i + EXT] > 0 ? 1 : 0;   // smoke alone is all granular
             return;
         }
         Vec3 mean = new Vec3(data[i + NX], data[i + NY], data[i + NZ]);
@@ -694,6 +713,7 @@ public final class VexelField {
     public VexelField coarser() {
         int px = (nx + 1) / 2, py = (ny + 1) / 2, pz = dims == 3 ? (nz + 1) / 2 : 1;
         VexelField p = new VexelField(dims, origin, cell * 2, px, py, pz, materials, attributes);
+        p.mediumMaterial = mediumMaterial;
         for (int z = 0; z < pz; z++) {
             for (int y = 0; y < py; y++) {
                 for (int x = 0; x < px; x++) {
@@ -729,6 +749,11 @@ public final class VexelField {
             nsum = nsum.plus(new Vec3(f.data[i + NX], f.data[i + NY], f.data[i + NZ]).times(a));
         }
         data[o + OCC] = (float) (occ / children);
+        double ext = 0;
+        for (int k : kids) {
+            ext += f.data[k * f.stride + EXT];
+        }
+        data[o + EXT] = (float) (ext / children);   // the mean rate: exact for the expected count along a ray
         Vec3 c = centre(x, y, z);
         if (occ > 0) {
             // the solid's centroid and spread, by the parallel-axis rule over the children's
@@ -835,8 +860,23 @@ public final class VexelField {
      * solid's ball with its fill; the three independent. Distances along the ray are in world units.
      */
     public RayHits trace(Vec3 from, Vec3 direction, double tMax) {
-        Vec3 d = direction.normalize();
         List<RayHits.Hit> hits = new ArrayList<>();
+        walkExpected(from, direction, tMax, hits);
+        return new RayHits(hits);
+    }
+
+    /**
+     * The chance the ray from {@code from} along {@code direction} gets {@code tMax} without being stopped: what
+     * {@link #trace} leaves over, without working out where each stop would be. For shadows: how much light reaches
+     * a point through the smoke and solid between it and the light.
+     */
+    public double transmittance(Vec3 from, Vec3 direction, double tMax) {
+        return walkExpected(from, direction, tMax, null);
+    }
+
+    /** {@link #trace}'s walk: the hits into {@code hits} if it is given; what gets through, returned. */
+    private double walkExpected(Vec3 from, Vec3 direction, double tMax, List<RayHits.Hit> hits) {
+        Vec3 d = direction.normalize();
         double[] through = {1};
         boolean[] inside = {solidAtStart(from)};
         walk(from, d, tMax, (x, y, z, t, exit) -> {
@@ -845,37 +885,68 @@ public final class VexelField {
             inside[0] = solidAt(c, x, y, z, from.plus(d.times(Math.max(t, exit - 1e-6 * cell))));
             if (!was && solidAt(c, x, y, z, from.plus(d.times(Math.min(exit, t + 1e-6 * cell))))) {
                 // into solid at the cell's wall: stopped there
-                int i = c * stride;
-                Vec3 p = from.plus(d.times(t));
-                hits.add(new RayHits.Hit(through[0], t, p, wallNormal(c, x, y, z, p, d), derived[k + GRAN],
-                        Arrays.copyOfRange(data, i + MAT, i + MAT + materials)));
+                if (hits != null) {
+                    int i = c * stride;
+                    Vec3 p = from.plus(d.times(t));
+                    Vec3 n = wallNormal(c, x, y, z, p, d);
+                    hits.add(new RayHits.Hit(through[0], t, p, n, derived[k + GRAN], 0, n == Vec3.ZERO ? 1 : 0,
+                            Arrays.copyOfRange(data, i + MAT, i + MAT + materials)));
+                }
                 through[0] = 0;
                 return false;
             }
-            if (was || data[c * stride + AREA] == 0) {
+            if (was || (data[c * stride + AREA] == 0 && derived[k + MEDIUM] == 0)) {
                 return true;   // in solid already, leaving it, or in a cell of nothing
             }
             Vec3[] face = {Vec3.ZERO};
             double plane = flatEntry(c, x, y, z, from, d, t, exit, inside[0], face);
             double flat = Double.isNaN(plane) ? 0 : 1;
-            double granular = 1 - Math.exp(-depth(c, x, y, z, from, d, t, exit));
+            double all = depth(c, x, y, z, from, d, t, exit);
+            double granular = 1 - Math.exp(-all);
             double entry = through(k, x, y, z, from, d, t, exit);
             double solid = Double.isNaN(entry) ? 0 : derived[k + FILL];
             double p = 1 - (1 - flat) * (1 - granular) * (1 - solid);
-            if (p > 0) {
+            if (p > 0 && hits != null) {
                 double g = derived[k + GRAN];
                 double th = (flat * (Double.isNaN(plane) ? 0 : plane)
                         + (granular > 0 ? granular * meanStop(c, x, y, z, from, d, t, exit, granular) : 0)
                         + (solid > 0 ? solid * ((1 - g) * (Double.isNaN(plane) ? entry : plane) + g * entry) : 0))
                         / (flat + granular + solid);
+                // what made the stop, in the order things happen along the ray: the granular share stops it at a
+                // rate all the way, the flat face at its crossing, the solid's ball at its entry, each taking what
+                // the ones before it left. The granular part is split between smoke and grains by their collisions
+                double[] times = {Double.isNaN(plane) ? Double.NaN : plane, Double.isNaN(entry) ? Double.NaN : entry};
+                double[] chances = {flat, solid};
+                double survive = 1, byGranular = 0, byFace = 0, byBall = 0, from0 = t;
+                for (int e : times[0] <= times[1] || Double.isNaN(times[1]) ? new int[]{0, 1} : new int[]{1, 0}) {
+                    if (Double.isNaN(times[e])) {
+                        continue;
+                    }
+                    double before = Math.exp(-depth(c, x, y, z, from, d, from0, times[e]));
+                    byGranular += survive * (1 - before);
+                    survive *= before;
+                    if (e == 0) {
+                        byFace += survive * chances[e];
+                    } else {
+                        byBall += survive * chances[e];
+                    }
+                    survive *= 1 - chances[e];
+                    from0 = Math.max(from0, times[e]);
+                }
+                byGranular += survive * (1 - Math.exp(-depth(c, x, y, z, from, d, from0, exit)));
+                double weight = byGranular + byFace + byBall;
+                double ofSmoke = all > 0 ? derived[k + MEDIUM] * (exit - t) / all : 0;
+                double smokeShare = byGranular * ofSmoke / weight;
+                double grainShare = (byGranular * (1 - ofSmoke) + byBall * g) / weight;
                 int i = c * stride;
-                hits.add(new RayHits.Hit(through[0] * p, th, from.plus(d.times(th)), flat > 0 ? face[0] : planeNormal(k),
-                        derived[k + GRAN], Arrays.copyOfRange(data, i + MAT, i + MAT + materials)));
-                through[0] *= 1 - p;
+                hits.add(new RayHits.Hit(through[0] * p, th, from.plus(d.times(th)),
+                        flat > 0 ? face[0] : planeNormal(k), derived[k + GRAN], smokeShare, grainShare,
+                        Arrays.copyOfRange(data, i + MAT, i + MAT + materials)));
             }
+            through[0] *= 1 - p;
             return through[0] > 1e-6;
         });
-        return new RayHits(hits);
+        return through[0];
     }
 
     /**
@@ -896,15 +967,15 @@ public final class VexelField {
             if (!was && solidAt(c, x, y, z, from.plus(d.times(Math.min(exit, t + 1e-6 * cell))))) {
                 Vec3 p = from.plus(d.times(t));
                 Vec3 n = wallNormal(c, x, y, z, p, d);
-                out[0] = new Collision(t, p, n == Vec3.ZERO, n,
+                out[0] = new Collision(t, p, n == Vec3.ZERO, false, n,
                         pick(c * stride, hash.u(x, y, z, bucket, VexelHash.MATERIAL)), x, y, z);
                 return false;
             }
-            if (was || data[c * stride + AREA] == 0) {
+            if (was || (data[c * stride + AREA] == 0 && derived[k + MEDIUM] == 0)) {
                 return true;
             }
             double best = Double.POSITIVE_INFINITY;
-            boolean granular = false;
+            boolean granular = false, smoke = false;
             Vec3[] face = {Vec3.ZERO};
             double plane = flatEntry(c, x, y, z, from, d, t, exit, inside[0], face);
             Vec3 normal = face[0];
@@ -927,6 +998,10 @@ public final class VexelField {
                 if (tg < best) {
                     best = tg;
                     granular = true;
+                    // grains or smoke, by their shares of the collisions over this stretch
+                    double all = depth(c, x, y, z, from, d, t, exit);
+                    double ofSmoke = derived[k + MEDIUM] * (exit - t);
+                    smoke = hash.u(x, y, z, bucket, VexelHash.MEDIUM) * all < ofSmoke;
                 }
             }
             double entry = through(k, x, y, z, from, d, t, exit);
@@ -936,14 +1011,15 @@ public final class VexelField {
                 if (ts < best) {
                     best = ts;
                     granular = kind;
+                    smoke = false;
                     normal = Double.isNaN(plane) ? planeNormal(k) : face[0];
                 }
             }
             if (best == Double.POSITIVE_INFINITY) {
                 return true;
             }
-            int material = pick(c * stride, hash.u(x, y, z, bucket, VexelHash.MATERIAL));
-            out[0] = new Collision(best, from.plus(d.times(best)), granular, granular ? Vec3.ZERO : normal,
+            int material = smoke ? mediumMaterial : pick(c * stride, hash.u(x, y, z, bucket, VexelHash.MATERIAL));
+            out[0] = new Collision(best, from.plus(d.times(best)), granular, smoke, granular ? Vec3.ZERO : normal,
                     material, x, y, z);
             return false;
         });
@@ -1115,7 +1191,7 @@ public final class VexelField {
         }
     }
 
-    /** The outward normal of the wall of cell {@code (x, y, z)} that a ray along {@code d} enters it by, at {@code p}. */
+    /** The outward normal of the wall of cell {@code (x, y, z)} a ray along {@code d} enters it by, at {@code p}. */
     private Vec3 cellWall(int x, int y, int z, Vec3 p, Vec3 d) {
         double[] q = xyz(p.minus(centre(x, y, z))), dir = xyz(d);
         int best = -1;
@@ -1176,9 +1252,14 @@ public final class VexelField {
      * spread, so a ray through the middle of a ball meets more of it than one past its edge, the cell's total kept.
      * In closed form: across the ray the Gaussian is a constant, along it a difference of normal distributions. A cell
      * with no solid, only surface, has its rate spread evenly. The Gaussian's tails past the cell's walls are lost,
-     * which a cell whose solid is spread wide undercounts.
+     * which a cell whose solid is spread wide undercounts. And the smoke's: its rate, evenly, over the length.
      */
     private double depth(int c, int x, int y, int z, Vec3 from, Vec3 d, double a, double b) {
+        return b <= a ? 0 : grainDepth(c, x, y, z, from, d, a, b) + derived[c * DERIVED + MEDIUM] * (b - a);
+    }
+
+    /** {@link #depth}'s grains alone, without the smoke. */
+    private double grainDepth(int c, int x, int y, int z, Vec3 from, Vec3 d, double a, double b) {
         int k = c * DERIVED;
         double rate = derived[k + RATE];
         double v = derived[k + G_VAR];
@@ -1198,6 +1279,11 @@ public final class VexelField {
 
     /** The expected distance of the granular share's stop, given one between {@code a} and {@code b}, by Simpson. */
     private double meanStop(int c, int x, int y, int z, Vec3 from, Vec3 d, double a, double b, double stopped) {
+        if (derived[c * DERIVED + RATE] == 0) {
+            // smoke alone, even over the cell: the mean of an exponential cut off at the cell's far wall
+            double rate = derived[c * DERIVED + MEDIUM], len = b - a;
+            return rate * len < 1e-6 ? a + len / 2 : a + 1 / rate - len * Math.exp(-rate * len) / stopped;
+        }
         int n = 32;
         double h = (b - a) / n;
         double end = 1 - stopped;

@@ -1,0 +1,428 @@
+import dev.vexelray.fields.vexel.*;
+import java.awt.*;
+import java.awt.image.BufferedImage;
+import java.io.*;
+import java.nio.ByteBuffer;
+import java.util.stream.IntStream;
+import java.util.zip.CRC32;
+import java.util.zip.Deflater;
+import javax.imageio.ImageIO;
+
+/**
+ * Smoke and sparkle: a gold turned cube in a twisting glittering plume, with a ring of dust at its feet, at four
+ * levels side by side, turning. Every stop is one hashed collide; smoke is lit through itself toward the sun; flakes
+ * come from Glitter, on a grid fixed in the object's space.
+ */
+public class SmokeShow {
+    static final int T = 240, TH = 270, TILES = 4, HEAD = 24;
+    static final int W = T * TILES, H = TH + HEAD, SS = 2;
+    static final Vec3 SUN = new Vec3(-0.55, 0.35, 0.55).normalize();
+    static final Vec3 EYE = new Vec3(4, -9.5, 6.4), TARGET = new Vec3(4, 4, 4.6);
+    static final double FOV = 46;
+    static final Glitter DUST = new Glitter(0.06, 0.25, 900, new VexelHash(5, 24));
+    static final Glitter GOLD = new Glitter(0.05, 0.6, 500, new VexelHash(9, 24));
+
+    public static void main(String[] a) throws Exception {
+        double c = Math.cos(Math.toRadians(30)), s = Math.sin(Math.toRadians(30));
+        Solid cube = (x, y, z) -> {
+            double u = (x - 4) * c + (y - 4) * s, v = -(x - 4) * s + (y - 4) * c, w = z - 3.2;
+            double qx = Math.abs(u) - 1.6, qy = Math.abs(v) - 1.6, qz = Math.abs(w) - 1.6;
+            double out = Math.sqrt(Math.pow(Math.max(qx, 0), 2) + Math.pow(Math.max(qy, 0), 2)
+                    + Math.pow(Math.max(qz, 0), 2));
+            return -(out + Math.min(Math.max(qx, Math.max(qy, qz)), 0));
+        };
+        Medium plume = (x, y, z) -> {
+            double cx = 4 + 0.7 * Math.sin(z * 0.9), cy = 4 + 0.7 * Math.cos(z * 0.7);
+            double rad = 0.55 + 0.22 * Math.max(0, z - 4);
+            double r2 = (x - cx) * (x - cx) + (y - cy) * (y - cy);
+            double rise = smooth((z - 4.4) / 1.2) * smooth((7.9 - z) / 0.8);
+            double column = Math.exp(-r2 / (2 * rad * rad)) * rise;
+            double rho = Math.hypot(x - 4, y - 4);
+            double ring = Math.exp(-Math.pow(rho - 2.9, 2) / (2 * 0.3 * 0.3) - Math.pow(z - 1.9, 2) / (2 * 0.3 * 0.3));
+            double n = fbm(x * 1.6, y * 1.6, z * 1.6);
+            return (2.4 * column + 1.6 * ring) * Math.max(0, n * 1.6 - 0.25);
+        };
+        VexelField[] levels = new VexelField[TILES];
+        levels[0] = VexelField.bake(cube, plume, Vec3.ZERO, 0.25, 32, 32, 32, 4);
+        for (int i = 1; i < TILES; i++) {
+            levels[i] = levels[i - 1].coarser();
+        }
+        System.out.println("baked");
+        String[] names = {"cells of 0.25", "cells of 0.5", "cells of 1", "cells of 2"};
+        if (a[1].equals("still")) {
+            double spin = Math.toRadians(Double.parseDouble(a[2]));
+            OPACITY = false;
+            BufferedImage hashed = frame(levels, new String[]{"hashed: cells of 0.25", "cells of 0.5", "cells of 1",
+                    "cells of 2"}, spin);
+            OPACITY = true;
+            BufferedImage opaque = frame(levels, new String[]{"opacity: cells of 0.25", "cells of 0.5", "cells of 1",
+                    "cells of 2"}, spin);
+            BufferedImage both = new BufferedImage(W, 2 * H, BufferedImage.TYPE_INT_RGB);
+            both.getGraphics().drawImage(hashed, 0, 0, null);
+            both.getGraphics().drawImage(opaque, 0, H, null);
+            ImageIO.write(both, "png", new File(a[0], "smoke-compare.png"));
+            System.out.println("still written");
+            return;
+        }
+        OPACITY = a.length > 3 && a[3].equals("opacity");
+        int n = Integer.parseInt(a[2]);
+        String file = OPACITY ? "smoke-opacity.png" : "smoke.png";
+        try (OutputStream out = new BufferedOutputStream(new FileOutputStream(new File(a[0], file)))) {
+            Apng apng = new Apng(out, W, H, n, 1, 15);
+            for (int f = 0; f < n; f++) {
+                apng.frame(frame(levels, names, 2 * Math.PI * f / n));
+                if (f % 12 == 0) {
+                    System.out.println("frame " + f);
+                }
+            }
+            apng.end();
+        }
+        System.out.println("animation written");
+    }
+
+    static double smooth(double t) {
+        t = Math.max(0, Math.min(1, t));
+        return t * t * (3 - 2 * t);
+    }
+
+    // ---- value noise
+
+    static double lattice(int x, int y, int z) {
+        long h = x * 73856093L ^ y * 19349663L ^ z * 83492791L;
+        h ^= h >>> 33;
+        h *= 0xff51afd7ed558ccdL;
+        h ^= h >>> 33;
+        return (h >>> 11) * 0x1.0p-53;
+    }
+
+    static double noise(double x, double y, double z) {
+        int ix = (int) Math.floor(x), iy = (int) Math.floor(y), iz = (int) Math.floor(z);
+        double fx = smooth(x - ix), fy = smooth(y - iy), fz = smooth(z - iz);
+        double v = 0;
+        for (int k = 0; k < 8; k++) {
+            int dx = k & 1, dy = k >> 1 & 1, dz = k >> 2 & 1;
+            v += lattice(ix + dx, iy + dy, iz + dz) * (dx == 1 ? fx : 1 - fx) * (dy == 1 ? fy : 1 - fy)
+                    * (dz == 1 ? fz : 1 - fz);
+        }
+        return v;
+    }
+
+    static double fbm(double x, double y, double z) {
+        return 0.55 * noise(x, y, z) + 0.3 * noise(x * 2.1, y * 2.1, z * 2.1) + 0.15 * noise(x * 4.3, y * 4.3, z * 4.3);
+    }
+
+    // ---- the frame
+
+    static BufferedImage frame(VexelField[] levels, String[] names, double spin) {
+        float[] hdr = new float[W * H * 3];
+        Vec3 fwd = TARGET.minus(EYE).normalize();
+        Vec3 right = fwd.cross(new Vec3(0, 0, 1)).normalize();
+        Vec3 down = fwd.cross(right).normalize();
+        double sh = Math.tan(Math.toRadians(FOV) / 2);
+        Vec3 sunLocal = rot(SUN, -spin);
+        float[][] shadows = new float[TILES][];
+        if (OPACITY) {
+            for (int i = 0; i < TILES; i++) {
+                shadows[i] = shadowGrid(levels[i], sunLocal);
+            }
+        }
+        IntStream.range(0, TH).parallel().forEach(y -> {
+            for (int x = 0; x < W; x++) {
+                int tile = x / T, tx = x % T;
+                double[] acc = new double[3];
+                for (int sy = 0; sy < SS; sy++) {
+                    for (int sx = 0; sx < SS; sx++) {
+                        double u = (2 * (tx + (sx + 0.5) / SS) / T - 1) * sh * T / TH;
+                        double v = (2 * (y + (sy + 0.5) / SS) / TH - 1) * sh;
+                        Vec3 d = fwd.plus(right.times(u)).plus(down.times(v)).normalize();
+                        double[] col = shade(levels[tile], shadows[tile], spin, sunLocal, d);
+                        for (int k = 0; k < 3; k++) {
+                            acc[k] += col[k] / (SS * SS);
+                        }
+                    }
+                }
+                for (int k = 0; k < 3; k++) {
+                    hdr[((y + HEAD) * W + x) * 3 + k] = (float) acc[k];
+                }
+            }
+        });
+        BufferedImage img = toImage(hdr);
+        Graphics2D g = img.createGraphics();
+        g.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
+        g.setColor(new Color(0x15171c));
+        g.fillRect(0, 0, W, HEAD);
+        g.setColor(new Color(0xd8dce4));
+        g.setFont(new Font("SansSerif", Font.PLAIN, 12));
+        for (int i = 0; i < TILES; i++) {
+            g.drawString(names[i], i * T + 8, 16);
+        }
+        g.setColor(new Color(0x2c3038));
+        for (int i = 1; i < TILES; i++) {
+            g.drawLine(i * T, 0, i * T, H);
+        }
+        return img;
+    }
+
+    static boolean OPACITY = false;
+    static final double[] GOLD_COLOUR = {1.0, 0.76, 0.33};
+
+    /** One ray, in the object's frame: it turns by {@code spin} about the field's vertical axis through (4, 4). */
+    static double[] shade(VexelField f, float[] shadow, double spin, Vec3 sun, Vec3 d) {
+        Vec3 centre = new Vec3(4, 4, 0);
+        Vec3 o = rot(EYE.minus(centre), -spin).plus(centre);
+        Vec3 ld = rot(d, -spin);
+        if (OPACITY) {
+            // every stop the ray may make, front to back, each by its chance; the sky by what gets through
+            RayHits hits = f.trace(o, ld, 60);
+            double[] out = new double[3];
+            double left = 1;
+            for (RayHits.Hit h : hits.hits()) {
+                Vec3 p = h.point();
+                double toSun = lookup(f, shadow, p.plus(h.normal().times(0.5 * f.cellSize())));
+                double[] s = smoke(p, ld, sun, toSun), g = grains(p, ld, sun, toSun), fl = flat(h.normal(), ld, spin,
+                        sun, toSun);
+                for (int k = 0; k < 3; k++) {
+                    out[k] += h.probability() * (h.smoke() * s[k] + h.grains() * g[k] + h.flat() * fl[k]);
+                }
+                left -= h.probability();
+            }
+            double[] bg = sky(d);
+            for (int k = 0; k < 3; k++) {
+                out[k] += Math.max(0, left) * bg[k];
+            }
+            return out;
+        }
+        Collision c = f.collide(o, ld, 60, new VexelHash(0, 24));
+        if (c == null) {
+            return sky(d);
+        }
+        Vec3 p = c.point();
+        double toSun = f.transmittance(p.plus(sun.times(1e-3)), sun, 30);
+        if (c.smoke()) {
+            return smoke(p, ld, sun, toSun);
+        }
+        if (c.granular()) {
+            return grains(p, ld, sun, toSun);
+        }
+        return flat(c.normal(), ld, spin, sun, toSun);
+    }
+
+    /** Smoke lit by the sun through what lies toward it, scattering forward as haze does, a quarter of it flakes. */
+    static double[] smoke(Vec3 p, Vec3 ld, Vec3 sun, double toSun) {
+        double g = 0.55, cos = sun.dot(ld);
+        double phase = (1 - g * g) / Math.pow(1 + g * g - 2 * g * cos, 1.5) * 0.25;
+        double flash = DUST.flash(p, ld, sun, 3) * toSun * 40;
+        double[] albedo = {0.86, 0.82, 0.78};
+        return new double[]{albedo[0] * (3.2 * toSun * phase + 0.16) + flash,
+                albedo[1] * (2.7 * toSun * phase + 0.2) + flash * 0.95,
+                albedo[2] * (2.1 * toSun * phase + 0.28) + flash * 0.85};
+    }
+
+    /** Grains of the gold: dark, but for the flakes the sun catches. */
+    static double[] grains(Vec3 p, Vec3 ld, Vec3 sun, double toSun) {
+        double flash = GOLD.flash(p, ld, sun, 3) * toSun * 30;
+        return new double[]{GOLD_COLOUR[0] * (0.06 + flash), GOLD_COLOUR[1] * (0.06 + flash),
+                GOLD_COLOUR[2] * (0.06 + flash)};
+    }
+
+    /** A gold face: the sky in it by Fresnel, and the sun's highlight where the smoke lets it through. */
+    static double[] flat(Vec3 normal, Vec3 ld, double spin, Vec3 sun, double toSun) {
+        Vec3 n = normal;
+        if (n.dot(ld) > 0) {
+            n = n.times(-1);
+        }
+        if (n == Vec3.ZERO || n.length() == 0) {
+            return new double[]{0.02, 0.02, 0.02};
+        }
+        Vec3 r = ld.minus(n.times(2 * ld.dot(n)));
+        double cos = Math.max(0, -n.dot(ld));
+        double[] env = sky(rot(r, spin));
+        double highlight = Math.pow(Math.max(0, r.dot(sun)), 400) * 40 * toSun;
+        double[] sunLight = {3.2, 2.7, 2.1};
+        double[] out = new double[3];
+        for (int k = 0; k < 3; k++) {
+            double fresnel = GOLD_COLOUR[k] + (1 - GOLD_COLOUR[k]) * Math.pow(1 - cos, 5);
+            out[k] = fresnel * (env[k] + highlight * sunLight[k] / 3) + 0.01;
+        }
+        return out;
+    }
+
+    /** What gets through toward the sun from each cell's centre, for this frame's sun. */
+    static float[] shadowGrid(VexelField f, Vec3 sun) {
+        int nx = f.sizeX(), ny = f.sizeY(), nz = f.sizeZ();
+        float[] g = new float[nx * ny * nz];
+        IntStream.range(0, nz).parallel().forEach(z -> {
+            for (int y = 0; y < ny; y++) {
+                for (int x = 0; x < nx; x++) {
+                    g[(z * ny + y) * nx + x] = (float) f.transmittance(f.centre(x, y, z), sun, 30);
+                }
+            }
+        });
+        return g;
+    }
+
+    /** {@link #shadowGrid} between cell centres, trilinearly. */
+    static double lookup(VexelField f, float[] g, Vec3 p) {
+        int nx = f.sizeX(), ny = f.sizeY(), nz = f.sizeZ();
+        double cs = f.cellSize();
+        double fx = p.x() / cs - 0.5, fy = p.y() / cs - 0.5, fz = p.z() / cs - 0.5;
+        int x0 = (int) Math.floor(fx), y0 = (int) Math.floor(fy), z0 = (int) Math.floor(fz);
+        double ax = fx - x0, ay = fy - y0, az = fz - z0, v = 0;
+        for (int k = 0; k < 8; k++) {
+            int dx = k & 1, dy = k >> 1 & 1, dz = k >> 2 & 1;
+            int x = Math.clamp(x0 + dx, 0, nx - 1), y = Math.clamp(y0 + dy, 0, ny - 1), z = Math.clamp(z0 + dz, 0, nz - 1);
+            v += g[(z * ny + y) * nx + x] * (dx == 1 ? ax : 1 - ax) * (dy == 1 ? ay : 1 - ay) * (dz == 1 ? az : 1 - az);
+        }
+        return v;
+    }
+
+    static double[] sky(Vec3 d) {
+        double up = Math.max(-1, Math.min(1, d.z()));
+        double t = Math.pow(Math.max(0, up), 0.5);
+        double[] horizon = {0.95, 0.62, 0.38}, zenith = {0.08, 0.16, 0.38}, ground = {0.06, 0.05, 0.06};
+        double[] c = up < 0 ? mix(horizon, ground, Math.min(1, -up * 6)) : mix(horizon, zenith, t);
+        double s = d.dot(SUN);
+        double disc = s > 0.9993 ? 40 : 0;
+        double glow = Math.pow(Math.max(0, s), 60) * 1.6 + Math.pow(Math.max(0, s), 6) * 0.25;
+        return new double[]{c[0] + disc + glow, c[1] + disc * 0.9 + glow * 0.8, c[2] + disc * 0.7 + glow * 0.55};
+    }
+
+    static double[] mix(double[] a, double[] b, double t) {
+        return new double[]{a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t};
+    }
+
+    static Vec3 rot(Vec3 v, double a) {
+        double c = Math.cos(a), s = Math.sin(a);
+        return new Vec3(c * v.x() - s * v.y(), s * v.x() + c * v.y(), v.z());
+    }
+
+    // ---- bloom and tone
+
+    static BufferedImage toImage(float[] hdr) {
+        float[] bright = new float[hdr.length];
+        for (int i = 0; i < hdr.length; i++) {
+            bright[i] = Math.max(0, hdr[i] - 1.0f);
+        }
+        float[] b1 = blur(bright, 2, 2), b2 = blur(bright, 8, 8), b3 = blur(bright, 22, 22);
+        float[] streak = blur(bright, 60, 1);
+        BufferedImage img = new BufferedImage(W, H, BufferedImage.TYPE_INT_RGB);
+        for (int y = 0; y < H; y++) {
+            for (int x = 0; x < W; x++) {
+                int rgb = 0;
+                for (int k = 0; k < 3; k++) {
+                    int i = (y * W + x) * 3 + k;
+                    double v = 0.85 * (hdr[i] + 0.6 * b1[i] + 0.35 * b2[i] + 0.2 * b3[i] + 0.25 * streak[i]);
+                    v = v * (2.51 * v + 0.03) / (v * (2.43 * v + 0.59) + 0.14);
+                    rgb = rgb << 8 | (int) Math.round(Math.pow(Math.max(0, Math.min(1, v)), 1 / 2.2) * 255);
+                }
+                img.setRGB(x, y, rgb);
+            }
+        }
+        return img;
+    }
+
+    static float[] blur(float[] src, int rx, int ry) {
+        float[] a = src;
+        for (int pass = 0; pass < 3; pass++) {
+            a = box(a, rx / 2 + 1, true);
+            if (ry > 1) {
+                a = box(a, ry / 2 + 1, false);
+            }
+        }
+        return a;
+    }
+
+    static float[] box(float[] src, int r, boolean across) {
+        float[] out = new float[src.length];
+        int len = across ? W : H, lines = across ? H : W;
+        IntStream.range(0, lines).parallel().forEach(l -> {
+            for (int k = 0; k < 3; k++) {
+                double sum = 0;
+                for (int i = -r; i <= r; i++) {
+                    sum += src[index(across, l, Math.max(0, Math.min(len - 1, i))) + k];
+                }
+                for (int i = 0; i < len; i++) {
+                    out[index(across, l, i) + k] = (float) (sum / (2 * r + 1));
+                    sum += src[index(across, l, Math.min(len - 1, i + r + 1)) + k]
+                            - src[index(across, l, Math.max(0, i - r)) + k];
+                }
+            }
+        });
+        return out;
+    }
+
+    static int index(boolean across, int l, int i) {
+        return (across ? l * W + i : i * W + l) * 3;
+    }
+
+    /** An animated PNG: full colour, played by browsers like a GIF. */
+    static final class Apng {
+        final DataOutputStream out;
+        final int w, h, num, den;
+        int seq = 0;
+        boolean first = true;
+
+        Apng(OutputStream o, int w, int h, int frames, int num, int den) throws IOException {
+            out = new DataOutputStream(o);
+            this.w = w;
+            this.h = h;
+            this.num = num;
+            this.den = den;
+            out.write(new byte[]{(byte) 0x89, 'P', 'N', 'G', 13, 10, 26, 10});
+            chunk("IHDR", ByteBuffer.allocate(13).putInt(w).putInt(h).put((byte) 8).put((byte) 2)
+                    .put((byte) 0).put((byte) 0).put((byte) 0).array());
+            chunk("acTL", ByteBuffer.allocate(8).putInt(frames).putInt(0).array());
+        }
+
+        void frame(BufferedImage img) throws IOException {
+            chunk("fcTL", ByteBuffer.allocate(26).putInt(seq++).putInt(w).putInt(h).putInt(0).putInt(0)
+                    .putShort((short) num).putShort((short) den).put((byte) 0).put((byte) 0).array());
+            byte[] raw = new byte[h * (1 + w * 3)];
+            int p = 0;
+            for (int y = 0; y < h; y++) {
+                raw[p++] = 1;
+                int pr = 0, pg = 0, pb = 0;
+                for (int x = 0; x < w; x++) {
+                    int rgb = img.getRGB(x, y), r = rgb >> 16 & 255, g = rgb >> 8 & 255, b = rgb & 255;
+                    raw[p++] = (byte) (r - pr);
+                    raw[p++] = (byte) (g - pg);
+                    raw[p++] = (byte) (b - pb);
+                    pr = r;
+                    pg = g;
+                    pb = b;
+                }
+            }
+            Deflater def = new Deflater(9);
+            def.setInput(raw);
+            def.finish();
+            ByteArrayOutputStream z = new ByteArrayOutputStream();
+            byte[] buf = new byte[1 << 16];
+            while (!def.finished()) {
+                z.write(buf, 0, def.deflate(buf));
+            }
+            byte[] data = z.toByteArray();
+            if (first) {
+                chunk("IDAT", data);
+                first = false;
+            } else {
+                chunk("fdAT", ByteBuffer.allocate(4 + data.length).putInt(seq++).put(data).array());
+            }
+        }
+
+        void end() throws IOException {
+            chunk("IEND", new byte[0]);
+            out.flush();
+        }
+
+        void chunk(String type, byte[] data) throws IOException {
+            out.writeInt(data.length);
+            byte[] t = type.getBytes("US-ASCII");
+            out.write(t);
+            out.write(data);
+            CRC32 crc = new CRC32();
+            crc.update(t);
+            crc.update(data);
+            out.writeInt((int) crc.getValue());
+        }
+    }
+}
