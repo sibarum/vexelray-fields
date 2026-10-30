@@ -233,8 +233,9 @@ class ArtFieldTest {
         assertTrue(svg.outline().isPresent(), "opaque stops: still an outline");
         Raster r = svg.render(8, 8);
         int o = (3 * 8 + 3) * 4;
-        assertEquals(128, r.rgba()[o] & 0xFF);   // the stops' mean, half red and half blue
-        assertEquals(128, r.rgba()[o + 2] & 0xFF);
+        // pixel 3's centre is 0.375 of the way across the rect from 2 to 6, in its bounding box's units
+        assertEquals(Math.round(0.625f * 255), r.rgba()[o] & 0xFF);
+        assertEquals(Math.round(0.375f * 255), r.rgba()[o + 2] & 0xFF);
         assertEquals(255, r.rgba()[o + 3] & 0xFF);
         assertEquals(0, r.rgba()[(7 * 8) * 4 + 3]);   // where the text would be, nothing
     }

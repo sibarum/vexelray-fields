@@ -24,8 +24,8 @@ final class Style {
     String fillSpec = "black";
     String strokeSpec = "none";
     float[] color = {0, 0, 0};
-    float[] fill;
-    float[] stroke;
+    Paint fill;
+    Paint stroke;
     float fillOpacity = 1;
     float strokeOpacity = 1;
     float opacity = 1;
@@ -44,7 +44,7 @@ final class Style {
 
     static Style initial() {
         Style s = new Style();
-        s.fill = new float[]{0, 0, 0, 1};
+        s.fill = new Paint(new float[]{0, 0, 0}, null);
         return s;
     }
 
@@ -147,52 +147,24 @@ final class Style {
         return s;
     }
 
-    /**
-     * A paint: red, green, blue and an opacity it adds, or null for none. A gradient is its stops' mean colour at
-     * their mean opacity: the shape it covers is exact, read by alpha with opaque stops, and only its colour is not.
-     */
-    private float[] paint(String spec, Svg svg) {
+    /** A paint: one colour, or a gradient. */
+    record Paint(float[] rgb, Gradient gradient) {
+
+        /** Whether it covers what it paints whole, before any opacity property. */
+        boolean opaque() {
+            return gradient == null || gradient.opaque();
+        }
+    }
+
+    /** The paint {@code spec} names, or null for none. */
+    private Paint paint(String spec, Svg svg) {
         if (spec.equals("none") || spec.equals("transparent")) {
             return null;
         }
         if (spec.startsWith("url(")) {
-            return gradient(svg.referenced(spec, "paint"), svg, spec);
+            return new Paint(null, Gradient.of(svg.referenced(spec, "paint"), svg, color));
         }
-        float[] c = spec.equals("currentColor") ? color : rgb(spec);
-        return new float[]{c[0], c[1], c[2], 1};
-    }
-
-    private float[] gradient(Element g, Svg svg, String spec) {
-        for (int hops = 0; hops < 16; hops++) {
-            String n = Svg.name(g);
-            if (!n.equals("linearGradient") && !n.equals("radialGradient")) {
-                throw new IllegalArgumentException("paint '" + spec + "': a <" + n + "> is not drawn here");
-            }
-            float[] sum = new float[4];
-            int stops = 0;
-            for (Element s : Svg.children(g)) {
-                if (Svg.name(s).equals("stop")) {
-                    String c = property(s, "stop-color");
-                    float[] rgb = c == null ? new float[3] : c.equals("currentColor") ? color : rgb(c);
-                    String o = property(s, "stop-opacity");
-                    sum[0] += rgb[0];
-                    sum[1] += rgb[1];
-                    sum[2] += rgb[2];
-                    sum[3] += o == null ? 1 : unit(o);
-                    stops++;
-                }
-            }
-            if (stops > 0) {
-                return new float[]{sum[0] / stops, sum[1] / stops, sum[2] / stops, sum[3] / stops};
-            }
-            String href = g.getAttribute("href").isBlank()
-                    ? g.getAttributeNS("http://www.w3.org/1999/xlink", "href") : g.getAttribute("href");
-            if (href.isBlank()) {
-                return null;   // a gradient of no stops paints nothing
-            }
-            g = svg.referenced(href, "gradient href");
-        }
-        throw new IllegalArgumentException("paint '" + spec + "': its gradients refer to each other in a loop");
+        return new Paint(spec.equals("currentColor") ? color : rgb(spec), null);
     }
 
     /** A colour: {@code #rgb}, {@code #rrggbb}, {@code rgb(…)} in numbers or percentages, or a basic name. */

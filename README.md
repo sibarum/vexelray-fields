@@ -14,14 +14,16 @@ mvn install        # build, test, and put it in the local Maven repository
 
 ```
 vexelray-fields-core    shapes (lines, quadratic and cubic Béziers; SVG path data), the nonzero fill by scanline,
-                        Field (the floats), Framing (shape units to texels), Encoding (the bytes), Coverage (drawn
-                        back on the CPU, as the shaders draw it).
+                        Field (the floats), Framing (shape units to texels), Encoding (the bytes) and LogEncoding (the
+                        bytes in log space, experimental), Coverage (drawn back on the CPU, as the shaders draw it).
 vexelray-fields-sdf     one true distance per texel: ShapeSdf from a shape's edges, MaskSdf from a raster mask by an
                         exact Euclidean distance transform.
 vexelray-fields-msdf    three distances whose median is the edge (Chlumský's MSDF), and MTSDF with the true distance
                         in a fourth: edge colouring, generation, sign and clash correction.
 vexelray-fields-art     art made into any of the three: an SVG (drawn here, in Java), a black-and-white raster, or one
                         channel of a raster, such as its transparency. ArtField is the front door.
+vexelray-fields-atlas   fields assembled into textures: GridAtlas (cells on grids, as the icon sets), ArtPair (a mark's
+                        field beside its colour) and AtlasPixels (the deflated file vexelray-text's AtlasPixels reads).
 vexelray-fields-vexel   experimental. Vexel fields: collision rate, granularity and materials per cell, filtered by
                         combining moments, and collided with by hashed rays that hold still frame to frame.
 ```
@@ -58,6 +60,103 @@ its pseudo-distance, then clash correction. Not yet here: msdfgen's newer error 
 interpolated values, not just neighbours), the overlapping-contour combiner (overlaps are handled by the sign pass
 instead), and the ink-trap colouring.
 
+### Log space (experimental)
+
+A linear byte trades the edge against the reach. Range 16 spends its 255 steps on 8 texels each way, and a glow or a
+shadow that wants 32 texels finds a flat 0 beyond them. Range 64 reaches 32, but every step is then four times as
+coarse, at the edge too. `LogEncoding` spends the steps the way such effects need them: fine at the edge, a fixed share
+of the distance far out.
+
+```java
+LogEncoding log = LogEncoding.matching(16, 32);   // as precise at the edge as linear 16, reaching 32: knee 2.45
+byte[] rgba = log.rgba(sdf);
+```
+
+A distance `d` is stored as `0.5 + 0.5 * asinh(d / knee) / asinh(reach / knee)`. `asinh` is a straight line through the
+edge, bending only with the cube of the distance, and is a logarithm beyond the knee. The edge stays at one half. The
+curve is odd and rises, so an MSDF's median is unchanged by it. The shader filters and takes the median as before, then
+decodes:
+
+```glsl
+float d = knee * sinh((e - 0.5) * 2.0 * asinh(reach / knee));
+```
+
+**Measured.** The README's star in a 128 × 128 field with a margin of 32, at eight rotations: a single framing lines its
+straight edges up with the bytes and is off by a third either way. The bytes are filtered, then decoded, as a GPU
+would, and checked against the float field. For an SDF:
+
+| encoding                 | edge error at 4× | at 16× | of which filtering | distance error at 4–16 texels | 16–32  | 32–64  |
+|--------------------------|-----------------:|-------:|-------------------:|------------------------------:|-------:|-------:|
+| linear 16 (reach 8)      |            0.038 |  0.137 |                  0 |                    2.5 (gone) | 16 (gone) | 33 (gone) |
+| linear 64 (reach 32)     |            0.142 |  0.368 |                  0 |                         0.064 |  0.062 | 9 (gone) |
+| log, knee 2.45, reach 32 |            0.038 |  0.136 |              0.019 |                         0.064 |  0.157 | 9 (gone) |
+| log, knee 1.90, reach 64 |            0.039 |  0.137 |              0.029 |                         0.082 |  0.202 |  0.340 |
+| log, knee 0.95, reach 32 |            0.034 |  0.108 |              0.091 |                         0.080 |  0.202 | 9 (gone) |
+| linear 8 (reach 4)       |            0.020 |  0.073 |                  0 |                    5.8 (gone) | 20 (gone) | 37 (gone) |
+
+The edge errors are mean coverage errors over edge pixels; "of which filtering" is the error at 16× with the bytes left
+unrounded. The distance errors are mean texels at texel centres, and "gone" means past the encoding's reach, clamped.
+An MSDF comes out the same to within a few hundredths. What it shows:
+
+* **At equal edge precision, log reaches four times as far.** The log encoding with a knee of 2.45 draws the edge as
+  linear 16 does, and reaches 32 texels, where linear 16 has run out at 8. Linear 64 reaches as far but draws the edge
+  3.7 times worse.
+* **Reaching farther costs little.** Doubling the reach to 64 keeps the edge precision the same; the knee drops to 1.9,
+  and the error far out grows by about a third. Far out the error stays under 1% of the distance.
+* **Keep the knee above about two texels.** The GPU's filter blends bytes on the curve rather than on the distance.
+  Within the knee the curve is nearly straight, so that costs nothing; with the knee under a texel it does, and the
+  "of which filtering" column dominates. A knee of 0.95 matches linear 8's step and still draws the edge half again
+  as coarsely as linear 8.
+
+`FieldTest.logBytesReachFarAndKeepTheEdge` holds the encoding's own properties.
+
+**Past the texture's edge.** Reach inside the texture is only half of it. An effect wider than the texture needs
+distances where there are no texels, and a clamp-to-edge sampler gives it the edge's distance, flat, however far out.
+But past the edge the whole shape lies on the texture's side, and that is enough to extrapolate. `Field.extended(u, v)`
+does it as a shader would:
+
+1. Step one texel in from the nearest point of the texture's edge.
+2. Take the gradient there.
+3. Follow it uphill by the distance there, to the shape's nearest point.
+4. The distance is to that point, but never less than `√(out² + d²)`.
+
+The point found is on the shape, so the result is never too near. No point of the texture is nearer than
+`√(out² + d²)`, with `out` the way past the edge and `d` the distance at the edge. The extrapolation takes four more
+reads, and only outside.
+
+```glsl
+// uv and size in texels; D(p) the filtered true distance at p, in texels
+vec2 q = clamp(uv, vec2(0.5), size - 0.5), g = clamp(q, vec2(1.5), size - 1.5);
+float d = D(g);
+vec2 n = normalize(vec2(D(g + vec2(.5, 0)) - D(g - vec2(.5, 0)), D(g + vec2(0, .5)) - D(g - vec2(0, .5))));
+float far = -max(length(uv - (g - n * d)), length(vec2(length(uv - q), D(q))));
+```
+
+Measured on textures cropped to a star, a disc and a bar with a margin of 8, sampled up to 96 texels outside, and checked
+against true fields over the whole canvas. Mean error in texels, by distance past the edge:
+
+|                         | 0–8  | 8–32 | 32–64 | 64–96 |
+|-------------------------|-----:|-----:|------:|------:|
+| star, clamp-to-edge     |  3.1 |   17 |    43 |    82 |
+| star, `d − out`         |  1.1 |  3.5 |   5.3 |   5.6 |
+| star, extended          | 0.22 | 0.93 |   1.7 |   1.9 |
+| disc, extended          | 0.12 | 0.61 |   1.3 |   1.5 |
+| bar, extended           | 0.01 | 0.01 |  0.02 |  0.02 |
+
+* **The error is about 2% of the distance, and too far rather than too near.** A glow or a shadow comes out a shade
+  fainter, never brighter. It is exact straight out from a straight edge.
+* **Concave shapes are worst.** The star's worst point is 19 texels off: from far away a different arm is nearer than
+  the one the edge texel pointed at. Each point found is an upper bound, so the nearest of several along the edge would
+  tighten it.
+* **The edge texels must hold true distances.** A star's texture corners are 28 texels from it, though its margin is 8.
+  Encoded at range 16 they clamp, and every way of extrapolating then goes wrong by several texels. Within the texture
+  the reach must cover its farthest edge texel.
+* **Follow a true distance.** An MSDF's median is a poor gradient far from its edges; an MTSDF's fourth channel is the
+  true distance, and `extended` follows that.
+
+Together that suggests a split: an MTSDF's three edge channels linear and tight, its true distance in log reaching the
+texture's corners, and `extended` past them. Not yet tried as one.
+
 ### Art: SVG, black and white, a channel
 
 What `vexelray-gui`'s icon bake does through imagelib, here with nothing native. The art is fitted into
@@ -91,10 +190,10 @@ that one distance in all three channels and its MTSDF in all four, the layout a 
 SDF's round corners. That is what the framework's icons are today.
 
 `Svg` draws fills, strokes (caps, joins, miter limits, dashes), masks and clips in user space, opacity, transforms,
-`use`, and properties as attributes or in `style`. Text is left out, as the icon bake leaves it out of a silhouette. A
-gradient paints as its stops' mean colour and opacity, so the area it covers is exact read by alpha. Images, patterns,
-filters, markers, style sheets and nested `svg` are refused by name rather than drawn wrongly. A stroke under a
-transform that stretches one way more than the other is drawn at its mean width.
+`use`, linear and radial gradients, and properties as attributes or in `style`. Text is left out, as the icon bake
+leaves it out of a silhouette. Images, patterns, filters, markers, style sheets and nested `svg` are refused by name
+rather than drawn wrongly. A stroke under a transform that stretches one way more than the other is drawn at its mean
+width. `render(w, h, samples)` antialiases, for art shown as it is.
 
 Measured against the framework: the 125 large icons of `vexelray-gui-icons`, baked here at its cell (64 + 16), differ
 from its atlas by 0.02 of 255 per texel on average, 0.18 in the worst cell. Of the 1,291 SVGs in `vexelray-icons`
@@ -102,6 +201,38 @@ and `vexelray-gui-icons`, every one that is a drawing converts; the one refused 
 
 Not here: tracing a raster into outlines (so a raster's or a stroked SVG's MSDF has sharp corners), and stroking
 into outlines for the same reason.
+
+### Atlases
+
+How `vexelray-gui-icons-maven-plugin` assembles its textures, without the Maven goals and the generated enums around
+it.
+
+```java
+List<Grid> grids = List.of(Grid.SUITE_LARGE, Grid.SUITE_SMALL);      // 64 + 16 over 48 + 12
+List<Entry> entries = names.stream().map(n -> Entry.of(n,
+        ArtField.of(Svg.read(large(n)), FieldKind.SDF, 64, 64, 16),
+        ArtField.of(Svg.read(small(n)), FieldKind.SDF, 48, 48, 12))).toList();
+GridAtlas atlas = GridAtlas.bake(entries, grids, null);               // null: as near square as fits
+atlas.pixels().write(Path.of("icons.rgba"));                          // written only if it changed
+
+ArtPair logo = ArtPair.bake(Svg.read(art), 128, 0.6f, new int[]{52, 104, 156, 208}, "orb");
+```
+
+* `GridAtlas`: each grid's cells fill whole rows in order and the grids stack, first on top; the width is the one with
+  the shortest longest side, then the least texture, within the 4096 every Vulkan device takes. A cell is written as
+  `DistanceField` lays a field out (`0.5 + d / 2·spread`), and texels no cell writes read as far outside. The file
+  families' fixed eight columns are a width of eight cells.
+* `ArtPair`: the field in the MTSDF layout at two ranges (alpha over the whole margin, RGB over an eighth of it), the
+  colour premultiplied and antialiased beside it, one atlas per size, and the `.pair` descriptor; a lifted part is left
+  out of the field and its place recorded.
+* `AtlasPixels`: `VXPX` (RGBA) or `VXPC` (any channel count, 1 or 4 read), then the texels deflated.
+
+Measured against the framework: the suite's atlas rebuilt here is its size (1344 × 1368), every one of its 125
+icons is in the same cell, and its bytes differ by 0.021 of 255 on average. Re-encoding the framework's own texels
+gives its `icons.rgba` byte for byte. The framework's logo pair: the same descriptor, fields within 2 of 255, colour
+within 0.24 on average (antialiasing at edges differs).
+
+Not here: the font atlases, which msdf-atlas-gen packs, and the plugin's build-side work (stamps, generated sources).
 
 ### Vexel fields (experimental)
 

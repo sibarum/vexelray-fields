@@ -50,8 +50,9 @@ import java.util.Set;
  * in other namespaces (an editor's own) are passed over.
  *
  * <p>Text is left out, as {@code vexelray-gui}'s icon bake leaves it out of a silhouette: at the sizes a field is
- * made for, letters are a smear, and nothing here has fonts to set them in. A gradient paints as its stops' mean
- * colour at their mean opacity, so the shape it covers is exact when read by alpha, and only its colour is not.
+ * made for, letters are a smear, and nothing here has fonts to set them in. Linear and radial gradients are drawn
+ * as SVG has them: in either units, transformed, focused, padded, reflected or repeated, and inherited by
+ * {@code href}.
  *
  * <p>Refused, by an {@link IllegalArgumentException} naming it, rather than drawn wrongly: images, patterns,
  * filters, markers, style sheets, nested {@code svg}, and masks or clips in bounding-box units. A mask's region in
@@ -143,6 +144,75 @@ public final class Svg {
         Layer layer = new Layer(width, height);
         r.children(root, toPixels(width, height), Style.initial().with(root, this), layer);
         return layer.raster();
+    }
+
+    /**
+     * {@link #render} with each pixel the mean of {@code samples × samples} samples spread over it, in premultiplied
+     * colour: an antialiased picture, for art shown as it is rather than made into a field.
+     */
+    public Raster render(int width, int height, int samples) {
+        if (samples < 1) {
+            throw new IllegalArgumentException(samples + " samples a side");
+        }
+        if (samples == 1) {
+            return render(width, height);
+        }
+        byte[] fine = render(width * samples, height * samples).rgba();
+        int fw = width * samples;
+        byte[] out = new byte[width * height * 4];
+        float n = samples * samples;
+        for (int y = 0; y < height; y++) {
+            for (int x = 0; x < width; x++) {
+                float r = 0, g = 0, b = 0, a = 0;
+                for (int sy = 0; sy < samples; sy++) {
+                    for (int sx = 0; sx < samples; sx++) {
+                        int o = ((y * samples + sy) * fw + x * samples + sx) * 4;
+                        float pa = (fine[o + 3] & 0xFF) / 255f;
+                        r += (fine[o] & 0xFF) * pa;
+                        g += (fine[o + 1] & 0xFF) * pa;
+                        b += (fine[o + 2] & 0xFF) * pa;
+                        a += pa;
+                    }
+                }
+                int o = (y * width + x) * 4;
+                if (a > 0) {
+                    out[o] = (byte) Math.round(r / a);
+                    out[o + 1] = (byte) Math.round(g / a);
+                    out[o + 2] = (byte) Math.round(b / a);
+                }
+                out[o + 3] = (byte) Math.round(a / n * 255);
+            }
+        }
+        return new Raster(width, height, out);
+    }
+
+    /** The drawing without the top-level element {@code id}. */
+    public Svg without(String id) {
+        return copy(id, false);
+    }
+
+    /** The drawing with nothing at the top level but {@code id} and the definitions it may use. */
+    public Svg only(String id) {
+        return copy(id, true);
+    }
+
+    private Svg copy(String id, boolean keep) {
+        Element root = (Element) this.root.cloneNode(true);
+        Element part = null;
+        for (Element c : children(root)) {
+            if (id.equals(c.getAttribute("id"))) {
+                part = c;
+            }
+        }
+        if (part == null) {
+            throw new IllegalArgumentException("no top-level element with id '" + id + "'");
+        }
+        for (Element c : children(root)) {
+            if (keep ? c != part && !name(c).equals("defs") : c == part) {
+                root.removeChild(c);
+            }
+        }
+        return new Svg(root);
     }
 
     /** Whether the drawing is stretched to fill, by {@code preserveAspectRatio="none"}, rather than fitted. */
@@ -442,9 +512,10 @@ public final class Svg {
                 return;
             }
             Path px = path.mapped(m::apply);
+            Bounds box = path.bounds();
             if (style.fill != null && !name(e).equals("line")) {
                 cover.fill(px.shape(), style.evenOdd);
-                into.paint(cover, style.fill, style.fillOpacity * style.fill[3]);
+                into.paint(cover, shader(style.fill, box, m), style.fillOpacity);
                 cover.clear();
             }
             if (style.stroke != null && style.strokeWidth > 0) {
@@ -457,9 +528,23 @@ public final class Svg {
                 }
                 Stroker.stroke(cover, px, style.strokeWidth * k, style.cap, style.join, style.miterLimit, dashes,
                         style.dashOffset * k);
-                into.paint(cover, style.stroke, style.strokeOpacity * style.stroke[3]);
+                into.paint(cover, shader(style.stroke, box, m), style.strokeOpacity);
                 cover.clear();
             }
+        }
+
+        /** {@code paint} at each pixel, for a shape whose box is {@code box} in user space; null for nothing. */
+        Gradient.Shader shader(Style.Paint paint, Bounds box, Affine m) {
+            if (paint.gradient() == null) {
+                float[] c = paint.rgb();
+                return (x, y, out) -> {
+                    out[0] = c[0];
+                    out[1] = c[1];
+                    out[2] = c[2];
+                    out[3] = 1;
+                };
+            }
+            return paint.gradient().shader(box, m, viewBox);
         }
 
         void mask(Element mask, Affine m, Layer target) {
@@ -600,7 +685,7 @@ public final class Svg {
                 if (style.fill == null || n.equals("line")) {
                     return true;
                 }
-                if (style.fillOpacity * style.fill[3] < 1 || style.evenOdd) {
+                if (style.fillOpacity < 1 || !style.fill.opaque() || style.evenOdd) {
                     return false;
                 }
                 contours.addAll(path.mapped(m::apply).shape().oriented().contours());

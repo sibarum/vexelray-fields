@@ -32,6 +32,9 @@
              or one channel of a raster, as any of the three kinds. What vexelray-gui's icon bake does through imagelib,
              with nothing native. -->
         <module>vexelray-fields-art</module>
+        <!-- Fields assembled into texture atlases: cells on grids (the icon sets), art pairs (a mark's field beside its
+             colour), and the deflated pixel file vexelray-text's AtlasPixels reads. -->
+        <module>vexelray-fields-atlas</module>
         <!-- Experimental. Vexel fields: per cell, a collision rate per distance, a granularity (smoke to surface) and
              the chance of each material, derived from moments that average where distances do not. -->
         <module>vexelray-fields-vexel</module>
@@ -65,6 +68,11 @@
             <dependency>
                 <groupId>dev.vexelray.fields</groupId>
                 <artifactId>vexelray-fields-art</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>dev.vexelray.fields</groupId>
+                <artifactId>vexelray-fields-atlas</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>

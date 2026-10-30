@@ -16,20 +16,26 @@ final class Layer {
         this.px = new float[width * height * 4];
     }
 
-    /** Colour {@code rgb} at alpha {@code a}, straight, over every pixel {@code cover} has. */
-    void paint(Cover cover, float[] rgb, float a) {
-        if (a <= 0) {
+    /**
+     * {@code shader}'s colour at each pixel's centre, at {@code opacity}, over every pixel {@code cover} has. A null
+     * shader paints nothing.
+     */
+    void paint(Cover cover, Gradient.Shader shader, float opacity) {
+        if (shader == null || opacity <= 0) {
             return;
         }
+        float[] c = new float[4];
         for (int y = cover.y0; y < cover.y1; y++) {
             for (int x = cover.x0; x < cover.x1; x++) {
                 int i = y * width + x;
                 if (cover.bits[i]) {
+                    shader.at(x + 0.5, y + 0.5, c);
                     int o = i * 4;
+                    float a = c[3] * opacity;
                     float keep = 1 - a;
-                    px[o] = rgb[0] * a + px[o] * keep;
-                    px[o + 1] = rgb[1] * a + px[o + 1] * keep;
-                    px[o + 2] = rgb[2] * a + px[o + 2] * keep;
+                    px[o] = c[0] * opacity + px[o] * keep;
+                    px[o + 1] = c[1] * opacity + px[o + 1] * keep;
+                    px[o + 2] = c[2] * opacity + px[o + 2] * keep;
                     px[o + 3] = a + px[o + 3] * keep;
                 }
             }

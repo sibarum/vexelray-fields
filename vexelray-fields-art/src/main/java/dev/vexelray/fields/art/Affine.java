@@ -27,6 +27,15 @@ record Affine(double a, double b, double c, double d, double e, double f) {
                 a * m.e + c * m.f + e, b * m.e + d * m.f + f);
     }
 
+    /** The transform that undoes this; null if it flattens the plane. */
+    Affine inverse() {
+        double det = a * d - b * c;
+        if (det == 0 || !Double.isFinite(det)) {
+            return null;
+        }
+        return new Affine(d / det, -b / det, -c / det, a / det, (c * f - d * e) / det, (b * e - a * f) / det);
+    }
+
     /** How much a length grows, on average over directions: the square root of the area's growth. */
     double scale() {
         return Math.sqrt(Math.abs(a * d - b * c));
