@@ -1,0 +1,353 @@
+import dev.vexelray.fields.vexel.*;
+import java.awt.image.BufferedImage;
+import java.io.*;
+import java.nio.ByteBuffer;
+import java.util.stream.IntStream;
+import java.util.zip.CRC32;
+import java.util.zip.Deflater;
+import javax.imageio.ImageIO;
+
+/** Metal vexel objects spinning in place over an invasion-at-dusk sky; granular stops become hashed glints; bloom. */
+public class Showcase {
+    static int W = 720, H = 340, SS = 2;
+    static final Vec3 EYE = new Vec3(0, -24, 5), TARGET = new Vec3(0, 0, 7);
+    static final double FOV = 50;
+
+    record Thing(VexelField field, Vec3 centre, double[] f0, int turn) {}
+
+    public static void main(String[] a) throws Exception {
+        double c = Math.cos(Math.toRadians(30)), s = Math.sin(Math.toRadians(30));
+        Solid cube = (x, y, z) -> {
+            double u = (x - 4) * c + (y - 4) * s, v = -(x - 4) * s + (y - 4) * c, w = z - 4;
+            double qx = Math.abs(u) - 2, qy = Math.abs(v) - 2, qz = Math.abs(w) - 2;
+            double out = Math.sqrt(Math.pow(Math.max(qx, 0), 2) + Math.pow(Math.max(qy, 0), 2)
+                    + Math.pow(Math.max(qz, 0), 2));
+            return -(out + Math.min(Math.max(qx, Math.max(qy, qz)), 0));
+        };
+        VexelField sphere = VexelField.bake(Solid.sphere(new Vec3(4, 4, 4), 3), Vec3.ZERO, 0.25, 32, 32, 32, 6);
+        VexelField box = VexelField.bake(cube, Vec3.ZERO, 0.25, 32, 32, 32, 6);
+        Thing[] things = {
+            new Thing(sphere.coarser().coarser().coarser(), new Vec3(-9.5, 0, 4.2), new double[]{0.95, 0.93, 0.88}, 1),
+            new Thing(box.coarser().coarser().coarser(), new Vec3(0, 2, 4.2), new double[]{1.0, 0.78, 0.36}, -1),
+            new Thing(sphere.coarser().coarser().coarser().coarser(), new Vec3(9.5, 0, 4.2),
+                    new double[]{0.95, 0.64, 0.54}, 1),
+        };
+        if (a[1].equals("still")) {
+            W = 1200;
+            H = 560;
+            ImageIO.write(toImage(frame(things, Math.toRadians(Double.parseDouble(a[2])))), "png",
+                    new File(a[0], "vexel-showcase-still.png"));
+            System.out.println("still written");
+        } else {
+            int n = Integer.parseInt(a[2]);
+            try (OutputStream out = new BufferedOutputStream(new FileOutputStream(new File(a[0], "vexel-showcase.png")))) {
+                Apng apng = new Apng(out, W, H, n, 1, 15);
+                for (int f = 0; f < n; f++) {
+                    apng.frame(toImage(frame(things, 2 * Math.PI * f / n)));
+                    if (f % 12 == 0) {
+                        System.out.println("frame " + f);
+                    }
+                }
+                apng.end();
+            }
+            System.out.println("animation written");
+        }
+    }
+
+    // ---- the scene
+
+    static float[] frame(Thing[] things, double spin) {
+        float[] hdr = new float[W * H * 3];
+        Vec3 fwd = TARGET.minus(EYE).normalize();
+        Vec3 right = fwd.cross(new Vec3(0, 0, 1)).normalize();
+        Vec3 down = fwd.cross(right).normalize();
+        double sh = Math.tan(Math.toRadians(FOV) / 2);
+        IntStream.range(0, H).parallel().forEach(y -> {
+            for (int x = 0; x < W; x++) {
+                double[] acc = new double[3];
+                for (int sy = 0; sy < SS; sy++) {
+                    for (int sx = 0; sx < SS; sx++) {
+                        double u = (2 * (x + (sx + 0.5) / SS) / W - 1) * sh * W / H;
+                        double v = (2 * (y + (sy + 0.5) / SS) / H - 1) * sh;
+                        Vec3 d = fwd.plus(right.times(u)).plus(down.times(v)).normalize();
+                        double[] col = shade(things, spin, d);
+                        for (int k = 0; k < 3; k++) {
+                            acc[k] += col[k] / (SS * SS);
+                        }
+                    }
+                }
+                for (int k = 0; k < 3; k++) {
+                    hdr[(y * W + x) * 3 + k] = (float) acc[k];
+                }
+            }
+        });
+        return hdr;
+    }
+
+    static double[] shade(Thing[] things, double spin, Vec3 d) {
+        Collision best = null;
+        Thing owner = null;
+        Vec3 localD = null;
+        for (Thing t : things) {
+            double ang = spin * t.turn();
+            Vec3 o = rot(EYE.minus(t.centre()), -ang).plus(new Vec3(4, 4, 4));
+            Vec3 ld = rot(d, -ang);
+            Collision c = t.field().collide(o, ld, 60, new VexelHash(0, 16));
+            if (c != null && (best == null || c.t() < best.t())) {
+                best = c;
+                owner = t;
+                localD = ld;
+            }
+        }
+        if (best == null) {
+            return env(d);
+        }
+        double ang = spin * owner.turn();
+        double[] f0 = owner.f0();
+        if (best.granular()) {
+            // glitter: the hit point quantized to microfacets a fifth of a cell across, each a mirror whose tilt is
+            // drawn from its own coordinates and the view's angle bucket, so it holds still until the bucket changes
+            VexelHash h = new VexelHash(0, 16);
+            int b = h.bucket(localD, 3);
+            double grain = owner.field().cellSize() / 5;
+            Vec3 p = best.point();
+            int mx = (int) Math.floor(p.x() / grain), my = (int) Math.floor(p.y() / grain), mz = (int) Math.floor(p.z() / grain);
+            double u1 = h.u(mx, my, mz, b, 7), u2 = h.u(mx, my, mz, b, 8);
+            double z = 2 * u1 - 1, phi = 2 * Math.PI * u2, r = Math.sqrt(1 - z * z);
+            // facing the viewer and a little up, tilted at random: cut like a gem, so the reflections land in the sky
+            Vec3 tilt = rot(new Vec3(r * Math.cos(phi), r * Math.sin(phi), z), ang);
+            Vec3 n = d.times(-1).plus(new Vec3(0, 0, 0.35)).normalize().plus(tilt.times(0.55)).normalize();
+            double[] e = env(reflect(d, n));
+            double luma = 0.3 * e[0] + 0.6 * e[1] + 0.1 * e[2];
+            double fire = luma > 0.7 ? 6 + 6 * luma : 0.35;   // a facet catching a light flares; the rest is dark metal
+            return new double[]{e[0] * fire * f0[0], e[1] * fire * f0[1], e[2] * fire * f0[2]};
+        }
+        Vec3 n = rot(best.normal(), ang);
+        if (n.dot(d) > 0) {
+            n = n.times(-1);
+        }
+        double cos = Math.max(0, -n.dot(d));
+        double[] e = env(reflect(d, n));
+        double[] out = new double[3];
+        for (int k = 0; k < 3; k++) {
+            double fresnel = f0[k] + (1 - f0[k]) * Math.pow(1 - cos, 5);
+            out[k] = fresnel * e[k] + 0.015;
+        }
+        return out;
+    }
+
+    static Vec3 rot(Vec3 v, double a) {
+        double c = Math.cos(a), s = Math.sin(a);
+        return new Vec3(c * v.x() - s * v.y(), s * v.x() + c * v.y(), v.z());
+    }
+
+    static Vec3 reflect(Vec3 d, Vec3 n) {
+        return d.minus(n.times(2 * d.dot(n)));
+    }
+
+    // ---- the sky: dusk, a burning skyline, and something very large overhead
+
+    static double hash(double a, double b) {
+        long h = Double.doubleToLongBits(a * 12.9898 + b * 78.233);
+        h ^= h >>> 33;
+        h *= 0xff51afd7ed558ccdL;
+        h ^= h >>> 33;
+        h *= 0xc4ceb9fe1a85ec53L;
+        h ^= h >>> 33;
+        return (h >>> 11) * 0x1.0p-53;
+    }
+
+    static double[] mix(double[] a, double[] b, double t) {
+        return new double[]{a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t};
+    }
+
+    static double[] env(Vec3 d) {
+        double elev = Math.asin(Math.max(-1, Math.min(1, d.z())));
+        double az = Math.atan2(d.y(), d.x());   // +y, straight ahead, is pi/2
+        double[] c = {0, 0, 0};
+        if (elev > -0.02) {
+            double t = Math.pow(Math.max(0, elev) / (Math.PI / 2), 0.42);
+            double[] low = {1.55, 0.55, 0.16}, mid = {0.55, 0.16, 0.18}, top = {0.03, 0.035, 0.09};
+            c = t < 0.35 ? mix(low, mid, t / 0.35) : mix(mid, top, Math.min(1, (t - 0.35) / 0.65));
+            // smoke banks
+            double smoke = 0.5 + 0.5 * Math.sin(az * 7 + Math.sin(az * 3) * 2 + elev * 14) * Math.sin(az * 2.3 - elev * 9);
+            double k0 = Math.exp(-Math.pow((elev - 0.12) / 0.09, 2)) * smoke * 0.55;
+            c = mix(c, new double[]{0.12, 0.07, 0.07}, k0);
+        }
+        // the ship: a vast flattened disc overhead and ahead
+        double ex = (az - Math.PI / 2) * Math.cos(elev) / 1.05, ey = (elev - 0.42) / 0.2;
+        double rr = ex * ex + ey * ey;
+        if (rr < 1 && elev > 0.2) {
+            double lines = Math.pow(Math.abs(Math.sin(Math.sqrt(rr) * 40)), 40) * 0.08;
+            c = new double[]{0.035 + lines, 0.04 + lines, 0.05 + lines * 1.3};
+            double ring = Math.abs(Math.sqrt(rr) - 0.62);
+            if (ring < 0.012 && hash(Math.floor(Math.atan2(ey, ex) * 40), 3) < 0.7) {
+                c = new double[]{2.5, 3.0, 4.0};
+            }
+            if (rr < 0.02) {
+                c = new double[]{9, 7, 5};
+            }
+            double edge = Math.max(0, Math.sqrt(rr) - 0.93) / 0.07;
+            c = new double[]{c[0] + edge * 0.6, c[1] + edge * 0.25, c[2] + edge * 0.1};
+        } else if (rr < 1.25 && elev > 0.2) {
+            double glow = (1.25 - rr) / 0.25;
+            c = new double[]{c[0] + glow * glow * 0.5, c[1] + glow * glow * 0.18, c[2] + glow * glow * 0.06};
+        }
+        // the skyline
+        double col = Math.floor(az * 70);
+        double height = 0.015 + Math.pow(hash(col, 1), 3) * 0.11;
+        boolean burning = hash(col, 2) < 0.12;
+        if (elev < height) {
+            c = new double[]{0.018, 0.016, 0.02};
+            if (elev > 0 && hash(Math.floor(az * 420), Math.floor(elev * 260)) < 0.09) {
+                c = new double[]{1.4, 0.95, 0.45};
+            }
+            if (burning) {
+                double f = Math.max(0, 1 - (height - elev) / 0.05);
+                c = new double[]{c[0] + f * f * 3.2, c[1] + f * f * 1.1, c[2] + f * f * 0.25};
+            }
+            if (elev < -0.02) {
+                double haze = Math.exp(elev * 18);
+                c = new double[]{0.02 + 0.5 * haze, 0.015 + 0.16 * haze, 0.02 + 0.05 * haze};
+            }
+        } else if (burning && elev < height + 0.08) {
+            double f = 1 - (elev - height) / 0.08;   // fire glow above burning towers
+            c = new double[]{c[0] + f * f * 1.4, c[1] + f * f * 0.45, c[2] + f * f * 0.1};
+        }
+        return c;
+    }
+
+    // ---- bloom and tone
+
+    static BufferedImage toImage(float[] hdr) {
+        float[] bright = new float[hdr.length];
+        for (int i = 0; i < hdr.length; i++) {
+            bright[i] = Math.max(0, hdr[i] - 1.0f);
+        }
+        float[] b1 = blur(bright, 3, 3), b2 = blur(bright, 10, 10), b3 = blur(bright, 28, 28);
+        float[] streak = blur(bright, 90, 1);
+        BufferedImage img = new BufferedImage(W, H, BufferedImage.TYPE_INT_RGB);
+        for (int y = 0; y < H; y++) {
+            for (int x = 0; x < W; x++) {
+                int rgb = 0;
+                for (int k = 0; k < 3; k++) {
+                    int i = (y * W + x) * 3 + k;
+                    double v = 0.9 * (hdr[i] + 0.55 * b1[i] + 0.35 * b2[i] + 0.25 * b3[i] + 0.35 * streak[i]);
+                    v = v * (2.51 * v + 0.03) / (v * (2.43 * v + 0.59) + 0.14);   // ACES, roughly
+                    rgb = rgb << 8 | (int) Math.round(Math.pow(Math.max(0, Math.min(1, v)), 1 / 2.2) * 255);
+                }
+                img.setRGB(x, y, rgb);
+            }
+        }
+        return img;
+    }
+
+    /** Three box blurs make near enough a Gaussian; rx, ry the radii across and down. */
+    static float[] blur(float[] src, int rx, int ry) {
+        float[] a = src;
+        for (int pass = 0; pass < 3; pass++) {
+            a = box(a, rx / 2 + 1, true);
+            if (ry > 1) {
+                a = box(a, ry / 2 + 1, false);
+            }
+        }
+        return a;
+    }
+
+    static float[] box(float[] src, int r, boolean across) {
+        float[] out = new float[src.length];
+        int len = across ? W : H, lines = across ? H : W;
+        IntStream.range(0, lines).parallel().forEach(l -> {
+            for (int k = 0; k < 3; k++) {
+                double sum = 0;
+                for (int i = -r; i <= r; i++) {
+                    sum += at(src, across, l, Math.max(0, Math.min(len - 1, i)), k);
+                }
+                for (int i = 0; i < len; i++) {
+                    out[index(across, l, i) + k] = (float) (sum / (2 * r + 1));
+                    sum += at(src, across, l, Math.min(len - 1, i + r + 1), k) - at(src, across, l, Math.max(0, i - r), k);
+                }
+            }
+        });
+        return out;
+    }
+
+    static int index(boolean across, int l, int i) {
+        return (across ? l * W + i : i * W + l) * 3;
+    }
+
+    static float at(float[] a, boolean across, int l, int i, int k) {
+        return a[index(across, l, i) + k];
+    }
+
+    /** An animated PNG: full colour, played by browsers like a GIF. */
+    static final class Apng {
+        final DataOutputStream out;
+        final int w, h, num, den;
+        int seq = 0;
+        boolean first = true;
+
+        Apng(OutputStream o, int w, int h, int frames, int num, int den) throws IOException {
+            out = new DataOutputStream(o);
+            this.w = w;
+            this.h = h;
+            this.num = num;
+            this.den = den;
+            out.write(new byte[]{(byte) 0x89, 'P', 'N', 'G', 13, 10, 26, 10});
+            chunk("IHDR", ByteBuffer.allocate(13).putInt(w).putInt(h).put((byte) 8).put((byte) 2)
+                    .put((byte) 0).put((byte) 0).put((byte) 0).array());
+            chunk("acTL", ByteBuffer.allocate(8).putInt(frames).putInt(0).array());
+        }
+
+        void frame(BufferedImage img) throws IOException {
+            chunk("fcTL", ByteBuffer.allocate(26).putInt(seq++).putInt(w).putInt(h).putInt(0).putInt(0)
+                    .putShort((short) num).putShort((short) den).put((byte) 0).put((byte) 0).array());
+            byte[] raw = new byte[h * (1 + w * 3)];
+            int p = 0;
+            for (int y = 0; y < h; y++) {
+                raw[p++] = 1;   // the Sub filter
+                int pr = 0, pg = 0, pb = 0;
+                for (int x = 0; x < w; x++) {
+                    int rgb = img.getRGB(x, y), r = rgb >> 16 & 255, g = rgb >> 8 & 255, b = rgb & 255;
+                    raw[p++] = (byte) (r - pr);
+                    raw[p++] = (byte) (g - pg);
+                    raw[p++] = (byte) (b - pb);
+                    pr = r;
+                    pg = g;
+                    pb = b;
+                }
+            }
+            Deflater def = new Deflater(9);
+            def.setInput(raw);
+            def.finish();
+            ByteArrayOutputStream z = new ByteArrayOutputStream();
+            byte[] buf = new byte[1 << 16];
+            while (!def.finished()) {
+                z.write(buf, 0, def.deflate(buf));
+            }
+            byte[] data = z.toByteArray();
+            if (first) {
+                chunk("IDAT", data);
+                first = false;
+            } else {
+                chunk("fdAT", ByteBuffer.allocate(4 + data.length).putInt(seq++).put(data).array());
+            }
+        }
+
+        void end() throws IOException {
+            chunk("IEND", new byte[0]);
+            out.flush();
+        }
+
+        void chunk(String type, byte[] data) throws IOException {
+            out.writeInt(data.length);
+            byte[] t = type.getBytes("US-ASCII");
+            out.write(t);
+            out.write(data);
+            CRC32 crc = new CRC32();
+            crc.update(t);
+            crc.update(data);
+            out.writeInt((int) crc.getValue());
+        }
+    }
+}
