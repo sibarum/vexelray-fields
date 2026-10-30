@@ -433,6 +433,13 @@ public final class VexelField {
     private static final double SPANS = 0.85;
 
     /**
+     * How near its plane, as a share of a cell, a ray may come into a cell's solid through a wall and still be taken to
+     * have come in through the plane: neighbouring cells' planes on a curved surface do not meet exactly at their
+     * shared wall, and a ray crossing the seam would otherwise be lit as if it had hit the wall.
+     */
+    private static final double SEAM = 0.05;
+
+    /**
      * Where on its plane a cell's surface lies, from the surface's centroid and covariance: a box (a segment, in 2D)
      * centred on the centroid's foot on the plane, along the principal axes of the covariance projected into the
      * plane, each half-width {@code √(3 · variance)}, the box a uniform rectangle's moments give back exactly. Grown
@@ -839,7 +846,8 @@ public final class VexelField {
             if (!was && solidAt(c, x, y, z, from.plus(d.times(Math.min(exit, t + 1e-6 * cell))))) {
                 // into solid at the cell's wall: stopped there
                 int i = c * stride;
-                hits.add(new RayHits.Hit(through[0], t, from.plus(d.times(t)), wallNormal(c, d), derived[k + GRAN],
+                Vec3 p = from.plus(d.times(t));
+                hits.add(new RayHits.Hit(through[0], t, p, wallNormal(c, x, y, z, p, d), derived[k + GRAN],
                         Arrays.copyOfRange(data, i + MAT, i + MAT + materials)));
                 through[0] = 0;
                 return false;
@@ -847,7 +855,8 @@ public final class VexelField {
             if (was || data[c * stride + AREA] == 0) {
                 return true;   // in solid already, leaving it, or in a cell of nothing
             }
-            double plane = crossing(c, x, y, z, from, d, t, exit);
+            Vec3[] face = {Vec3.ZERO};
+            double plane = flatEntry(c, x, y, z, from, d, t, exit, inside[0], face);
             double flat = Double.isNaN(plane) ? 0 : 1;
             double granular = 1 - Math.exp(-depth(c, x, y, z, from, d, t, exit));
             double entry = through(k, x, y, z, from, d, t, exit);
@@ -860,7 +869,7 @@ public final class VexelField {
                         + (solid > 0 ? solid * ((1 - g) * (Double.isNaN(plane) ? entry : plane) + g * entry) : 0))
                         / (flat + granular + solid);
                 int i = c * stride;
-                hits.add(new RayHits.Hit(through[0] * p, th, from.plus(d.times(th)), planeNormal(k),
+                hits.add(new RayHits.Hit(through[0] * p, th, from.plus(d.times(th)), flat > 0 ? face[0] : planeNormal(k),
                         derived[k + GRAN], Arrays.copyOfRange(data, i + MAT, i + MAT + materials)));
                 through[0] *= 1 - p;
             }
@@ -885,8 +894,9 @@ public final class VexelField {
             boolean was = inside[0];
             inside[0] = solidAt(c, x, y, z, from.plus(d.times(Math.max(t, exit - 1e-6 * cell))));
             if (!was && solidAt(c, x, y, z, from.plus(d.times(Math.min(exit, t + 1e-6 * cell))))) {
-                Vec3 n = wallNormal(c, d);
-                out[0] = new Collision(t, from.plus(d.times(t)), n == Vec3.ZERO, n,
+                Vec3 p = from.plus(d.times(t));
+                Vec3 n = wallNormal(c, x, y, z, p, d);
+                out[0] = new Collision(t, p, n == Vec3.ZERO, n,
                         pick(c * stride, hash.u(x, y, z, bucket, VexelHash.MATERIAL)), x, y, z);
                 return false;
             }
@@ -895,7 +905,9 @@ public final class VexelField {
             }
             double best = Double.POSITIVE_INFINITY;
             boolean granular = false;
-            double plane = crossing(c, x, y, z, from, d, t, exit);
+            Vec3[] face = {Vec3.ZERO};
+            double plane = flatEntry(c, x, y, z, from, d, t, exit, inside[0], face);
+            Vec3 normal = face[0];
             if (!Double.isNaN(plane)) {
                 best = plane;
             }
@@ -924,13 +936,14 @@ public final class VexelField {
                 if (ts < best) {
                     best = ts;
                     granular = kind;
+                    normal = Double.isNaN(plane) ? planeNormal(k) : face[0];
                 }
             }
             if (best == Double.POSITIVE_INFINITY) {
                 return true;
             }
             int material = pick(c * stride, hash.u(x, y, z, bucket, VexelHash.MATERIAL));
-            out[0] = new Collision(best, from.plus(d.times(best)), granular, granular ? Vec3.ZERO : planeNormal(k),
+            out[0] = new Collision(best, from.plus(d.times(best)), granular, granular ? Vec3.ZERO : normal,
                     material, x, y, z);
             return false;
         });
@@ -1018,14 +1031,22 @@ public final class VexelField {
     }
 
     /**
-     * The normal of a stop where a ray enters a cell's solid at the cell's wall: the cell's plane's, if it has one;
-     * none, for a granular cell; facing the ray, for a cell solid through with no surface in it.
+     * The normal of a stop where a ray enters a cell's solid at the cell's wall, at {@code p}: the wall's, the face
+     * of the solid it came in by; none, for a granular cell's ball.
      */
-    private Vec3 wallNormal(int c, Vec3 d) {
-        if (data[c * stride + AREA] == 0) {
-            return d.times(-1);
+    private Vec3 wallNormal(int c, int x, int y, int z, Vec3 p, Vec3 d) {
+        int k = c * DERIVED;
+        boolean grains = data[c * stride + AREA] > 0 && derived[k + HALF] == 0;
+        if (grains) {
+            return Vec3.ZERO;
         }
-        return derived[c * DERIVED + HALF] > 0 ? planeNormal(c * DERIVED) : Vec3.ZERO;
+        if (derived[k + HALF] > 0) {
+            Vec3 n = planeNormal(k);
+            if (Math.abs(p.minus(centre(x, y, z)).dot(n) - derived[k + PH]) <= SEAM * cell) {
+                return n;   // in on the plane itself, where it meets the wall
+            }
+        }
+        return cellWall(x, y, z, p, d);
     }
 
     private Vec3 planeNormal(int k) {
@@ -1040,7 +1061,7 @@ public final class VexelField {
      * plane, a footprint's side, the back or the cell's wall alike; never leaving, since a ray leaving solid crosses
      * its face too.
      */
-    private double crossing(int c, int x, int y, int z, Vec3 from, Vec3 d, double t, double exit) {
+    private double crossing(int c, int x, int y, int z, Vec3 from, Vec3 d, double t, double exit, Vec3[] face) {
         int k = c * DERIVED;
         if (derived[k + HALF] == 0) {
             return Double.NaN;
@@ -1048,34 +1069,105 @@ public final class VexelField {
         Vec3 q = from.minus(centre(x, y, z));
         Vec3 n = planeNormal(k);
         double[] span = {t, exit};
-        bound(span, n, q, d, derived[k + PH]);   // n·p ≤ h: behind the face
-        bound(span, n.times(-1), q, d, derived[k + DEPTH] - derived[k + PH]);   // and no deeper than its depth
+        Vec3[] by = {null};
+        bound(span, by, n, q, d, derived[k + PH]);   // n·p ≤ h: behind the face
+        bound(span, by, n.times(-1), q, d, derived[k + DEPTH] - derived[k + PH]);   // and no deeper than its depth
         if (derived[k + W1] >= 0) {
             Vec3 b = new Vec3(derived[k + BX], derived[k + BY], derived[k + BZ]);
             Vec3 u = new Vec3(derived[k + UX], derived[k + UY], derived[k + UZ]);
-            bound(span, u, q, d, b.dot(u) + derived[k + W1]);
-            bound(span, u.times(-1), q, d, -b.dot(u) + derived[k + W1]);
+            bound(span, by, u, q, d, b.dot(u) + derived[k + W1]);
+            bound(span, by, u.times(-1), q, d, -b.dot(u) + derived[k + W1]);
             if (dims == 3) {
                 Vec3 v = n.cross(u);
-                bound(span, v, q, d, b.dot(v) + derived[k + W2]);
-                bound(span, v.times(-1), q, d, -b.dot(v) + derived[k + W2]);
+                bound(span, by, v, q, d, b.dot(v) + derived[k + W2]);
+                bound(span, by, v.times(-1), q, d, -b.dot(v) + derived[k + W2]);
             }
         }
-        return span[0] < span[1] ? span[0] : Double.NaN;
+        // a face on the cell's far wall is met as the ray leaves the cell: that is still this cell's to stop
+        if (span[0] > span[1] + 1e-9 * cell) {
+            return Double.NaN;
+        }
+        // the face it came in by; the plane's own, though, where it comes in on the plane or next to it (a seam)
+        double onPlane = q.plus(d.times(span[0])).dot(n) - derived[k + PH];
+        face[0] = Math.abs(onPlane) <= SEAM * cell ? n
+                : by[0] != null ? by[0] : cellWall(x, y, z, from.plus(d.times(span[0])), d);
+        return span[0];
     }
 
-    /** Narrow {@code span}, a stretch of the ray, to where {@code a·p ≤ limit}, {@code p = q + s d}. */
-    private static void bound(double[] span, Vec3 a, Vec3 q, Vec3 d, double limit) {
+    /**
+     * Narrow {@code span}, a stretch of the ray, to where {@code a·p ≤ limit}, {@code p = q + s d}; {@code by} takes
+     * the face whose crossing inward now opens the span, its outward normal {@code a}.
+     */
+    private static void bound(double[] span, Vec3[] by, Vec3 a, Vec3 q, Vec3 d, double limit) {
         double rate = a.dot(d), at = a.dot(q);
         if (rate == 0) {
             if (at > limit) {
                 span[1] = span[0] - 1;   // outside it all the way
             }
         } else if (rate < 0) {
-            span[0] = Math.max(span[0], (limit - at) / rate);   // crossing inward
+            double s = (limit - at) / rate;   // crossing inward
+            if (s >= span[0]) {
+                span[0] = s;
+                by[0] = a;
+            }
         } else {
             span[1] = Math.min(span[1], (limit - at) / rate);   // crossing outward
         }
+    }
+
+    /** The outward normal of the wall of cell {@code (x, y, z)} that a ray along {@code d} enters it by, at {@code p}. */
+    private Vec3 cellWall(int x, int y, int z, Vec3 p, Vec3 d) {
+        double[] q = xyz(p.minus(centre(x, y, z))), dir = xyz(d);
+        int best = -1;
+        double near = Double.MAX_VALUE;
+        for (int a = 0; a < dims; a++) {
+            if (dir[a] != 0) {
+                double gap = cell / 2 + (dir[a] > 0 ? q[a] : -q[a]);   // from the wall it comes in by
+                if (gap < near) {
+                    near = gap;
+                    best = a;
+                }
+            }
+        }
+        double[] n = new double[3];
+        if (best >= 0) {
+            n[best] = dir[best] > 0 ? -1 : 1;
+        }
+        return new Vec3(n[0], n[1], n[2]);
+    }
+
+    /**
+     * Where the ray enters cell {@code c}'s flat share, from {@link #crossing}, with the face it enters by in
+     * {@code face}; NaN if it does not. Should the faces miss an entry that {@link #solidAt} saw (the ray leaves the
+     * cell, {@code insideAtExit}, in solid it was not in at the wall), the entry is searched for, so a ray never passes
+     * into solid unstopped.
+     */
+    private double flatEntry(int c, int x, int y, int z, Vec3 from, Vec3 d, double t, double exit,
+                             boolean insideAtExit, Vec3[] face) {
+        double plane = crossing(c, x, y, z, from, d, t, exit, face);
+        if (Double.isNaN(plane) && insideAtExit) {
+            plane = entryBySearch(c, x, y, z, from, d, t, exit);
+            Vec3 p = from.plus(d.times(plane));
+            face[0] = derived[c * DERIVED + HALF] > 0 ? planeNormal(c * DERIVED) : cellWall(x, y, z, p, d);
+        }
+        return plane;
+    }
+
+    /**
+     * Where the ray comes into cell {@code c}'s solid, as {@link #solidAt} has it, between {@code t}, where it is not
+     * in it, and {@code exit}, where it is: the solid is convex, so once. A safeguard for an entry the faces missed.
+     */
+    private double entryBySearch(int c, int x, int y, int z, Vec3 from, Vec3 d, double t, double exit) {
+        double lo = t, hi = exit - 1e-6 * cell;
+        for (int i = 0; i < 48; i++) {
+            double mid = 0.5 * (lo + hi);
+            if (solidAt(c, x, y, z, from.plus(d.times(mid)))) {
+                hi = mid;
+            } else {
+                lo = mid;
+            }
+        }
+        return hi;
     }
 
     /**

@@ -122,6 +122,20 @@ the cell: a cell whose granular share stops a ray half the time is wholly there 
 prism draws nothing, being solid. Averaged over seeds, `collide` agrees with `trace`
 (`hashedCollisionsAverageToTheExpectedOutcome`).
 
+What it looks like: `VexelPreview` draws a field on the CPU, one hashed `collide` per pixel. Grey-blue is a stop on a
+flat share, lit by the face it entered; orange is a granular stop, which has no normal. Each row is a level, from the
+solid itself down to one cell; the columns are one frame, the average of 32 frames (what accumulating frames converges
+to) and one frame with the cells outlined.
+
+| | |
+|---|---|
+| ![a sphere at every level](docs/vexel-sphere.png) | ![a turned cube at every level](docs/vexel-cube.png) |
+
+Read off them: fine levels are faceted by one plane a cell; at cells of 2 and 4 each cell is a prism, and its sides
+show; at one cell the solid is a granular ball, its edge where its solid would end, with a notch where the angle
+buckets change. The cube at cells of 1 and 2 has a slot at its bottom edge where a ray clips a cell 85% solid but
+misses its prism, its granular blob and its ball alike: the one-blob-per-cell limit below.
+
 Known:
 * The 85% at which a footprint becomes the whole slice is tuned on one sphere: at 80% the leak came back at cells of 2,
   at 90% cracks opened at cells of 1.
