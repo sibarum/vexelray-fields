@@ -26,6 +26,9 @@ vexelray-fields-atlas   fields assembled into textures: GridAtlas (cells on grid
                         field beside its colour) and AtlasPixels (the deflated file vexelray-text's AtlasPixels reads).
 vexelray-fields-vexel   experimental. Vexel fields: collision rate, granularity and materials per cell, filtered by
                         combining moments, and collided with by hashed rays that hold still frame to frame.
+vexelray-fields-fractal experimental. Fractals on a rational grid of boxes (modulus rules, small textures, hashed
+                        levels), covered by a Gaussian footprint in closed form: exact to an authored depth, blurred by
+                        one baked table below what the footprint resolves.
 ```
 
 ### Conventions
@@ -325,3 +328,53 @@ Known:
 * The rate's free share is the cell's average occupancy, not the occupancy where the ray is.
 
 Experimental: the cell's layout, the derivation and the bake are expected to change.
+
+### Fractal coverage (experimental)
+
+A fractal here is boxes on a rational grid of base `n` over the unit cube, each level made from the one above by a
+weight per child: `0` or `1` for a modulus rule (the Menger sponge keeps a child unless two of its digits are 1),
+a probability for a small texture, or a chance drawn from a hash chain (each child's hash from its parent's and its own
+digits) for a randomized level, so the draw holds still under zoom and from frame to frame. A box's index is integers,
+so its place is exact at any depth, and the depth is an authored cap: past it, a kept box is solid. `Fractal.density`
+reads a point's fill from its digits alone, in O(depth).
+
+`Coverage` says how much of a Gaussian footprint lands in the solid: the product of three closed-form axis terms per
+box, summed over boxes by recursion from the root. Boxes past the footprint's reach are culled. A box the footprint
+is too wide to resolve (`σ / size > c`) is blurred instead: its next `m₀` levels from `T(u, s)`, one table shared by
+every level because a Gaussian's coverage is scale-invariant, and the levels past those by their fill fractions. A box
+fewer than `m₀` levels from the depth is recursed, never blurred, since `T` would hold structure that isn't there.
+
+```java
+Fractal sponge = Fractal.repeat(Level.menger(), 12, seed).with(6, Level.menger().randomized(0.8));
+double p = Coverage.of(sponge).at(x, y, z, sigma);           // a blurred sample
+float[] grid = Coverage.of(sponge).rasterize(64, sigma);      // each cell the exact mean over the samples in it
+```
+
+The footprint is truncated at 3σ and renormalized, so the cull is exact rather than an approximation, coverage is
+exactly `0` with no solid in reach and exactly `1` wholly in solid, and the price is a kink of 0.0044 in the slope
+where a box's face meets the footprint's edge. Φ is either the error function or `Cdf.FAST`, a logistic of a cubic:
+one `exp`, within 1.414 × 10⁻⁴, exactly symmetric. A raster cell is the area under the curve, by Ψ, Φ's
+antiderivative; Ψ has no closed form for the fast Φ, and the exact φ in its place leaves it 1.2 × 10⁻³ off.
+
+`Texture` is a small 3D texture as geometry: each texel a box holding a probability, the Gaussian's integral over them
+the interpolation, a tensor contraction of at most 7 taps a side at σ of one texel. Smooth across texel faces where
+trilinear creases, with a closed-form gradient for normals; `texture.level()` puts it at the top of a fractal.
+
+Measured on a Menger sponge of depth 4 against every box summed, Gaussian samples with σ from 0.004 to 0.15:
+
+| c | m₀ | blur summed exactly, worst | from the table, worst |
+|---|---|---|---|
+| 0.20 | 1 | 9.2 × 10⁻³ | |
+| 0.36 | 1 | 1.4 × 10⁻³ | 1.9 × 10⁻³ (49³ offsets × 9 widths, 4 MB) |
+| 0.56 | 1 | 4.5 × 10⁻⁴ | |
+| 0.20 | 2 | 4.5 × 10⁻⁴ | |
+| 0.36 | 2 | 1.3 × 10⁻⁴ | |
+
+The default, `c = 0.36` and `m₀ = 1`, stays under one 8-bit step (3.9 × 10⁻³). In 3D the blur is better than the 1D
+Cantor test predicts: at `c = 0.56` it is within 4.5 × 10⁻⁴, where the 1D test asked for 10⁻³. The table's own error
+is in its interpolation, cubic along `s` (linear there was 7.5 × 10⁻³) and linear along the offsets. At `m₀ = 1` it
+is about twice as fast as summing the 27 sub-boxes (2.2 against 4.2 µs a query at depth 12, σ from 10⁻⁴ to 0.1); at
+`m₀ = 2`, where the sum is 729 sub-boxes, it should earn more, not yet measured.
+
+Not yet here: a ray's traversal (where partly filled geometry counts as a hit is still open), the directional
+visibility field built on it, and anisotropic footprints.

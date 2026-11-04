@@ -38,6 +38,9 @@
         <!-- Experimental. Vexel fields: per cell, a collision rate per distance, a granularity (smoke to surface) and
              the chance of each material, derived from moments that average where distances do not. -->
         <module>vexelray-fields-vexel</module>
+        <!-- Experimental. Fractals on a rational grid of boxes, covered by a Gaussian footprint in closed form: exact to
+             an authored depth, blurred by one baked table below what the footprint resolves. -->
+        <module>vexelray-fields-fractal</module>
     </modules>
 
     <properties>
@@ -78,6 +81,11 @@
             <dependency>
                 <groupId>dev.vexelray.fields</groupId>
                 <artifactId>vexelray-fields-vexel</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>dev.vexelray.fields</groupId>
+                <artifactId>vexelray-fields-fractal</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>
