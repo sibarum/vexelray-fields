@@ -15,7 +15,7 @@ import java.util.List;
  * @param pages  the texels, numbered from 0
  * @param layers back to front
  */
-@IntrabufMessage(name = "vexelray.sdg.Drawing", major = 1, minor = 1, compat = Compat.FULL)
+@IntrabufMessage(name = "vexelray.sdg.Drawing", major = 1, minor = 2, compat = Compat.FULL)
 public record Drawing(double width, double height,
                       @Field(nonNull = true) List<Page> pages,
                       @Field(nonNull = true) List<Layer> layers) {

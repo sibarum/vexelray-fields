@@ -4,6 +4,8 @@ import dev.vexelray.fields.Field;
 import dev.vexelray.fields.FieldKind;
 import dev.vexelray.fields.Framing;
 import dev.vexelray.fields.art.Svg;
+import dev.vexelray.fields.art.SvgGroup;
+import dev.vexelray.fields.art.SvgNode;
 import dev.vexelray.fields.art.SvgPart;
 import dev.vexelray.fields.msdf.Msdf;
 import dev.vexelray.fields.sdf.MaskSdf;
@@ -46,17 +48,89 @@ public final class SvgToSdg {
     private SvgToSdg() {
     }
 
+    /**
+     * {@code svg} as an SDG: a layer per fill and stroke, and a group (SDG 1.2) for each element drawn apart, one with a
+     * group opacity, a {@code clip-path} or a {@code mask} ({@link Svg#tree}).
+     */
     public static Sdg convert(Svg svg, Options o) {
         Bounds vb = svg.viewBox();
-        List<SvgPart> parts = svg.parts();
         Assembly a = new Assembly(vb.width(), vb.height());
+        return a.build(nodes(svg.tree(), a, vb, o, new int[1]));
+    }
+
+    private static List<Assembly.Node> nodes(List<SvgNode> tree, Assembly a, Bounds vb, Options o, int[] count) {
+        List<Assembly.Node> out = new java.util.ArrayList<>();
+        for (SvgNode node : tree) {
+            switch (node) {
+                case SvgPart part -> {
+                    int i = part(part, a, vb, o, ++count[0]);
+                    if (i >= 0) {
+                        out.add(new Assembly.Shape(i));
+                    }
+                }
+                case SvgGroup g -> {
+                    int clip = -1;
+                    if (!g.clip().isEmpty()) {
+                        clip = clip(g.clip(), a, vb, o);
+                        if (clip < 0) {
+                            continue;   // clipped to nothing
+                        }
+                    }
+                    List<Assembly.Node> mask = g.maskKind() == null ? List.of() : nodes(g.mask(), a, vb, o, count);
+                    List<Assembly.Node> children = nodes(g.children(), a, vb, o, count);
+                    out.add(new Assembly.Group(g.name().orElse("group " + ++count[0]), g.opacity(), clip,
+                            g.maskKind(), mask, children));
+                }
+            }
+        }
+        return out;
+    }
+
+    /**
+     * A clip's stencil, its shapes' union, pending in {@code a}: an MSDF when it is one shape whose outline reads
+     * exactly, else an SDF of their masks together. -1 when it covers nothing.
+     */
+    private static int clip(List<SvgPart> shapes, Assembly a, Bounds vb, Options o) {
+        Bounds b = Bounds.EMPTY;
+        for (SvgPart p : shapes) {
+            if (!p.bounds().isEmpty()) {
+                b = b.include(p.bounds());
+            }
+        }
+        if (b.isEmpty()) {
+            return -1;
+        }
         double s = o.texelsPerUnit();
-        int n = 0;
-        for (SvgPart part : parts) {
-            n++;
+        int x0 = (int) Math.floor((b.xMin() - vb.xMin()) * s) - o.spread();
+        int y0 = (int) Math.floor((b.yMin() - vb.yMin()) * s) - o.spread();
+        int x1 = (int) Math.ceil((b.xMax() - vb.xMin()) * s) + o.spread();
+        int y1 = (int) Math.ceil((b.yMax() - vb.yMin()) * s) + o.spread();
+        int w = x1 - x0, h = y1 - y0;
+        double ox = vb.xMin() + x0 / s, oy = vb.yMin() + y0 / s;
+        Field field;
+        var outline = shapes.size() == 1 ? shapes.getFirst().outline() : java.util.Optional.<Shape>empty();
+        if (outline.isPresent()) {
+            field = Msdf.generate(FieldKind.MSDF, outline.get(), new Framing(s, ox, oy, false), w, h);
+        } else {
+            boolean[] union = new boolean[w * OVERSAMPLE * h * OVERSAMPLE];
+            for (SvgPart p : shapes) {
+                boolean[] m = p.mask(ox, oy, s * OVERSAMPLE, w * OVERSAMPLE, h * OVERSAMPLE);
+                for (int i = 0; i < union.length; i++) {
+                    union[i] |= m[i];
+                }
+            }
+            field = MaskSdf.of(union, w * OVERSAMPLE, h * OVERSAMPLE, OVERSAMPLE, 0);
+        }
+        return a.pend("clip", new Assembly.Stencil(field, x0 / s, y0 / s, s, 2.0 * o.spread()), null, null, 1f);
+    }
+
+    /** One fill or stroke pending in {@code a}, its {@code n}th part: its index; -1 when it draws nothing. */
+    private static int part(SvgPart part, Assembly a, Bounds vb, Options o, int n) {
+        double s = o.texelsPerUnit();
+        {
             Bounds b = part.bounds();
             if (b.isEmpty() || part.opacity() <= 0) {
-                continue;
+                return -1;
             }
             // the rectangle, in texels from the view box's corner, with the margin round it
             int x0 = (int) Math.floor((b.xMin() - vb.xMin()) * s) - o.spread();
@@ -80,12 +154,10 @@ public final class SvgToSdg {
             var solid = part.solid();
             if (solid.isPresent()) {
                 float[] c = solid.get();
-                a.add(name, stencil, Sdg.Paint.Solid.of(c[0], c[1], c[2], 1), part.opacity());
-            } else {
-                a.add(name, stencil, bake(part, w, h, ox, oy, s, x0 / s, y0 / s), part.opacity());
+                return a.pend(name, stencil, Sdg.Paint.Solid.of(c[0], c[1], c[2], 1), null, part.opacity());
             }
+            return a.pend(name, stencil, null, bake(part, w, h, ox, oy, s, x0 / s, y0 / s), part.opacity());
         }
-        return a.build();
     }
 
     /** The part's gradient over its rectangle, a texel each field texel, straight. */

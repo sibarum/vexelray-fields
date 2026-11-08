@@ -92,6 +92,49 @@ public final class Convert {
                         + "take it SVG → SDG → Mask → Shape")));
     }
 
+    /**
+     * SVG → Raster, EXACT: the drawing itself in {@code width × height}, fitted, each pixel the mean of
+     * {@value #SVG_SAMPLES} × {@value #SVG_SAMPLES} samples. Any SVG the reader draws, a group's opacity, mask or
+     * clip included, which SVG → SDG refuses. {@code Svg.render}.
+     */
+    public static Conversion<Svg, Raster> svgToRaster(int width, int height) {
+        return Conversion.edge(SVG, RASTER, Fidelity.EXACT, svg -> svg.render(width, height, SVG_SAMPLES));
+    }
+
+    /** Samples a side per pixel when an SVG is drawn as a raster. */
+    public static final int SVG_SAMPLES = 4;
+
+    /**
+     * SVG → Raster sizes, EXACT: as {@link #sdgToRasterSizes}, each size drawn from the SVG itself, or from the smallest
+     * of {@code small} that covers it: for an icon whose drawing composites (a group's opacity, a clip), which cannot be
+     * an SDG.
+     */
+    public static Conversion<Svg, List<Raster>> svgToRasterSizes(int[] sizes, List<SmallSvg> small) {
+        int[] sorted = sizes.clone();
+        Arrays.sort(sorted);
+        List<SmallSvg> byUpTo = new ArrayList<>(small);
+        byUpTo.sort(Comparator.comparingInt(SmallSvg::upTo));
+        Fidelity f = small.isEmpty() ? Fidelity.EXACT : Fidelity.synthesising("a drawing per small size");
+        return Conversion.edge(SVG, RASTER_SIZES, f, svg -> {
+            List<Raster> out = new ArrayList<>();
+            for (int size : sorted) {
+                Svg from = svg;
+                for (SmallSvg sm : byUpTo) {
+                    if (size <= sm.upTo()) {
+                        from = sm.drawing();
+                        break;
+                    }
+                }
+                out.add(from.render(size, size, SVG_SAMPLES));
+            }
+            return List.copyOf(out);
+        });
+    }
+
+    /** An SVG redrawn for the smallest sizes: every size up to {@code upTo} is drawn from it. */
+    public record SmallSvg(int upTo, Svg drawing) {
+    }
+
     // ------------------------------------------------------------------ rasters and masks
 
     /**
@@ -150,6 +193,16 @@ public final class Convert {
                     1.0 / m.oversample()), flatness);
             return s;
         });
+    }
+
+    /**
+     * Mask → Shape, EXACT: the samples as squares, their boundary exactly, a vertex only where it turns: pixel art's
+     * own outline, which an MSDF then keeps square at any size. In the texels of the field the mask was sampled for,
+     * as {@link #maskToShape}'s.
+     */
+    public static Conversion<Mask, Shape> maskToCells() {
+        return Conversion.edge(MASK, SHAPE, Fidelity.EXACT, m -> MaskTrace.cells(new Mask(m.width(), m.height(),
+                m.inside(), m.oversample(), 0, 0, 1.0 / m.oversample())));
     }
 
     // ------------------------------------------------------------------ fields
@@ -496,6 +549,11 @@ public final class Convert {
     /** SDG → Raster sizes → Icon, EXACT (or needing the small drawings, when there are some). */
     public static Conversion<Sdg, Icon> sdgToIcon(int[] sizes, List<Small> small) {
         return sdgToRasterSizes(sizes, small).then(icon());
+    }
+
+    /** SVG → Raster sizes → Icon, EXACT (or needing the small drawings): an icon of a drawing that is not an SDG. */
+    public static Conversion<Svg, Icon> svgToIcon(int[] sizes, List<SmallSvg> small) {
+        return svgToRasterSizes(sizes, small).then(icon());
     }
 
     /**

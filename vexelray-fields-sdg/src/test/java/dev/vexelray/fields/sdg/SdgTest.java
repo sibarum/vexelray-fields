@@ -73,13 +73,18 @@ class SdgTest {
         assertTrue(e.edges < 12, e.toString());
     }
 
+    /** Refused before 1.2; a group since, drawn once at its opacity (SdgGroupsTest draws it). */
     @Test
-    void groupOpacityIsRefusedRatherThanDrawnWrong() {
+    void groupOpacityIsAGroupNotTwoFadedLayers() {
         Svg svg = Svg.parse("""
                 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10">
                   <g opacity="0.5"><rect width="6" height="6"/><rect x="3" y="3" width="6" height="6"/></g>
                 </svg>""");
-        assertThrows(IllegalArgumentException.class, () -> SvgToSdg.convert(svg, new SvgToSdg.Options(4, 4)));
+        Sdg sdg = SvgToSdg.convert(svg, new SvgToSdg.Options(4, 4));
+        assertEquals(1, sdg.layers().size());
+        assertTrue(sdg.layers().getFirst().isGroup());
+        assertEquals(0.5f, sdg.layers().getFirst().opacity());
+        assertEquals(2, sdg.layers().getFirst().group().layers().size());
     }
 
     /**

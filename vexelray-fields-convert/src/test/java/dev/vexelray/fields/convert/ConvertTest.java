@@ -109,6 +109,43 @@ class ConvertTest {
     }
 
     @Test
+    void pixelArtComesBackAsItsOwnSquares() {
+        // an L of three samples, and a sample touching it only at a corner
+        String[] rows = {"#..", "##.", "..#"};
+        boolean[] in = new boolean[9];
+        for (int i = 0; i < 9; i++) {
+            in[i] = rows[i / 3].charAt(i % 3) == '#';
+        }
+        Shape s = Convert.maskToCells().apply(new Mask(3, 3, in, 1, 0, 0, 1));
+        java.util.Set<String> corners = new java.util.TreeSet<>();
+        int edges = 0;
+        for (var c : s.contours()) {
+            for (var e : c.edges()) {
+                Vec2 p = e.point(0);
+                corners.add((int) p.x() + "," + (int) p.y());
+                assertEquals(Math.round(p.x()), p.x(), 0);
+                assertEquals(Math.round(p.y()), p.y(), 0);
+                edges++;
+            }
+        }
+        // the L's six corners and the square's four, one of which it shares: joined there, never split
+        assertEquals(10, edges);
+        assertEquals(java.util.Set.of("0,0", "1,0", "1,1", "2,1", "2,2", "0,2", "3,2", "3,3", "2,3"), corners);
+        assertTrue(s.filled(new Vec2(0.5, 1.5)));
+        assertTrue(s.filled(new Vec2(2.5, 2.5)));
+        assertFalse(s.filled(new Vec2(1.5, 0.5)));
+    }
+
+    @Test
+    void aLayerTakesItsRoleByNameAndAMissingNameIsRefused() {
+        Sdg badge = badge();
+        Sdg roled = badge.withRoles(java.util.Map.of("sun", "accent"));
+        assertEquals("accent", ((Sdg.Paint.Solid) roled.layers().stream().filter(l -> l.name().equals("sun"))
+                .findFirst().orElseThrow().paint()).role());
+        assertThrows(IllegalArgumentException.class, () -> badge.withRoles(java.util.Map.of("moon", "ink")));
+    }
+
+    @Test
     void aRingTracesToAnOutlineAndAHoleThatTheFillLeavesEmpty() {
         int w = 64;
         boolean[] in = new boolean[w * w];
@@ -275,6 +312,16 @@ class ConvertTest {
         }
         assertThrows(IllegalArgumentException.class, () -> new Icon(List.of(new Raster(16, 16, new byte[1024]),
                 new Raster(16, 16, new byte[1024]))));
+    }
+
+    @Test
+    void aDrawingThatCompositesIsAGroupAndAnIcon() {
+        Svg faded = Svg.parse("<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 16 16\"><g opacity=\"0.5\">"
+                + "<rect width=\"16\" height=\"16\" fill=\"#ff0000\"/></g></svg>");
+        assertTrue(Convert.svgToSdg(32).apply(faded).layers().getFirst().isGroup(), "a group since SDG 1.2");
+        Icon icon = Convert.svgToIcon(new int[]{16, 32}, List.of()).apply(faded);
+        assertEquals("SVG → Raster sizes → Icon", Convert.svgToIcon(new int[]{16}, List.of()).name());
+        assertEquals(128, icon.sizes().getFirst().rgba()[3] & 0xFF, 1);
     }
 
     // ------------------------------------------------------------------ two more routes

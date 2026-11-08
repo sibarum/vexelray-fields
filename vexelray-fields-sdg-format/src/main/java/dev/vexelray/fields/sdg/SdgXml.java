@@ -55,41 +55,73 @@ final class SdgXml {
             s.append("  <page id=\"").append(id(i)).append("\" width=\"").append(p.width()).append("\" height=\"")
                     .append(p.height()).append("\" href=\"").append(href.href(i, Png.encode(p))).append("\"/>\n");
         }
-        for (Sdg.Layer l : sdg.layers()) {
-            s.append("  <layer name=\"").append(escape(l.name())).append('"');
+        layers(s, sdg.layers(), "  ");
+        s.append("</sdg>\n");
+        return s.toString();
+    }
+
+    /** {@code layers} at indent {@code in}: each a {@code <layer>}, or a {@code <group>} with its clip, mask and layers. */
+    private static void layers(StringBuilder s, List<Sdg.Layer> layers, String in) {
+        for (Sdg.Layer l : layers) {
+            if (l.isGroup()) {
+                group(s, l, in);
+                continue;
+            }
+            s.append(in).append("<layer name=\"").append(escape(l.name())).append('"');
             if (l.opacity() != 1f) {
                 s.append(" opacity=\"").append(num(l.opacity())).append('"');
             }
             s.append(">\n");
-            Sdg.Stencil t = l.stencil();
-            s.append("    <stencil kind=\"").append(escape(t.kind())).append("\" page=\"").append(id(t.page()))
-                    .append('"');
-            if (t.channel() != 0) {
-                s.append(" channel=\"").append(t.channel()).append('"');
-            }
-            rect(s, t.x(), t.y(), t.width(), t.height(), t.originX(), t.originY(), t.scale());
-            s.append(" range=\"").append(num((float) t.range())).append("\"/>\n");
+            stencil(s, "stencil", l.stencil(), in + "  ");
             switch (l.paint()) {
                 case Sdg.Paint.Solid c -> {
-                    s.append("    <paint kind=\"solid\" colour=\"#").append(String.format(Locale.ROOT, "%08x",
-                            c.rgba())).append('"');
+                    s.append(in).append("  <paint kind=\"solid\" colour=\"#").append(String.format(Locale.ROOT,
+                            "%08x", c.rgba())).append('"');
                     if (!c.role().isEmpty()) {
                         s.append(" role=\"").append(escape(c.role())).append('"');
                     }
                     s.append("/>\n");
                 }
                 case Sdg.Paint.Sampled p -> {
-                    s.append("    <paint kind=\"sampled\" page=\"").append(id(p.page())).append('"');
+                    s.append(in).append("  <paint kind=\"sampled\" page=\"").append(id(p.page())).append('"');
                     rect(s, p.x(), p.y(), p.width(), p.height(), p.originX(), p.originY(), p.scale());
                     s.append("/>\n");
                 }
                 case Sdg.Paint.Unknown u -> throw new IllegalArgumentException(
                         "a paint of kind " + u.kind() + " has nothing to write");
             }
-            s.append("  </layer>\n");
+            s.append(in).append("</layer>\n");
         }
-        s.append("</sdg>\n");
-        return s.toString();
+    }
+
+    /** A group (since 1.2): {@code <group>} holding its {@code <clip>}, its {@code <mask>} and its layers, in order. */
+    private static void group(StringBuilder s, Sdg.Layer l, String in) {
+        s.append(in).append("<group name=\"").append(escape(l.name())).append('"');
+        if (l.opacity() != 1f) {
+            s.append(" opacity=\"").append(num(l.opacity())).append('"');
+        }
+        s.append(">\n");
+        Sdg.Group g = l.group();
+        if (g.clip() != null) {
+            stencil(s, "clip", g.clip(), in + "  ");
+        }
+        if (g.mask() != null) {
+            s.append(in).append("  <mask kind=\"").append(escape(g.mask().kind())).append("\">\n");
+            layers(s, g.mask().layers(), in + "    ");
+            s.append(in).append("  </mask>\n");
+        }
+        layers(s, g.layers(), in + "  ");
+        s.append(in).append("</group>\n");
+    }
+
+    private static void stencil(StringBuilder s, String element, Sdg.Stencil t, String in) {
+        s.append(in).append('<').append(element).append(" kind=\"").append(escape(t.kind())).append("\" page=\"")
+                .append(id(t.page())).append('"');
+        if (t.channel() != 0) {
+            s.append(" channel=\"").append(t.channel()).append('"');
+        }
+        rect(s, t.x(), t.y(), t.width(), t.height(), t.originX(), t.originY(), t.scale());
+        s.append(" range=\"").append(num((float) t.range())).append("\"/>\n");
     }
 
     /** Where a page goes: its {@code href}. */
@@ -212,12 +244,63 @@ final class SdgXml {
                     pageList.add(p);
                 }
                 case "layer" -> layers.add(layer(e, ids));
+                case "group" -> layers.add(group(e, ids, 1));
                 default -> {
                     // an element this reader does not know: skipped
                 }
             }
         }
         return new Sdg(width, height, pageList, layers);
+    }
+
+    /** A {@code <group>} {@code depth} deep: its {@code <clip>}, its {@code <mask>}, and its layers and groups in order. */
+    private static Sdg.Layer group(Element e, Map<String, Integer> ids, int depth) {
+        String name = e.hasAttribute("name") ? e.getAttribute("name") : "";
+        if (depth > Sdg.Group.MAX_DEPTH) {
+            throw new IllegalArgumentException("group " + name + " nests groups past " + Sdg.Group.MAX_DEPTH + " deep");
+        }
+        float opacity = (float) real(e, "opacity", 1);
+        Sdg.Stencil clip = null;
+        Sdg.Mask mask = null;
+        List<Sdg.Layer> layers = new ArrayList<>();
+        for (Element c : children(e)) {
+            switch (c.getLocalName()) {
+                case "layer" -> layers.add(layer(c, ids));
+                case "group" -> layers.add(group(c, ids, depth + 1));
+                case "clip" -> {
+                    if (clip != null) {
+                        throw new IllegalArgumentException("group " + name + " has two of <clip>");
+                    }
+                    clip = stencil(c, ids);
+                }
+                case "mask" -> {
+                    if (mask != null) {
+                        throw new IllegalArgumentException("group " + name + " has two of <mask>");
+                    }
+                    List<Sdg.Layer> m = new ArrayList<>();
+                    for (Element ml : children(c)) {
+                        switch (ml.getLocalName()) {
+                            case "layer" -> m.add(layer(ml, ids));
+                            case "group" -> m.add(group(ml, ids, depth + 1));
+                            default -> {
+                                // skipped, as at the top
+                            }
+                        }
+                    }
+                    mask = new Sdg.Mask(c.hasAttribute("kind") ? c.getAttribute("kind") : Sdg.Mask.LUMINANCE, m);
+                }
+                default -> {
+                    // an element this reader does not know: skipped
+                }
+            }
+        }
+        return Sdg.Layer.group(name, opacity, new Sdg.Group(layers, clip, mask));
+    }
+
+    private static Sdg.Stencil stencil(Element st, Map<String, Integer> ids) {
+        return new Sdg.Stencil(required(st, "kind"), page(st, ids), integer(st, "channel", 0),
+                integer(st, "x", -1), integer(st, "y", -1), integer(st, "width", -1), integer(st, "height", -1),
+                pair(st, 0), pair(st, 1), real(st, "scale", 1), (float) real(st, "range", Double.NaN));
     }
 
     private static Sdg.Layer layer(Element e, Map<String, Integer> ids) {

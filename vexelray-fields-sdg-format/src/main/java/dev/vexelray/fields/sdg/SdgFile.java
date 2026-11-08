@@ -154,26 +154,46 @@ public final class SdgFile {
         if (!Double.isFinite(sdg.width()) || !Double.isFinite(sdg.height())) {
             throw new IllegalArgumentException("a canvas " + sdg.width() + " × " + sdg.height());
         }
-        for (Sdg.Layer l : sdg.layers()) {
+        layers(sdg, sdg.layers(), 0);
+        return sdg;
+    }
+
+    /** Every layer of {@code layers} checked, a group's own layers, clip and mask too, {@code depth} groups down. */
+    private static void layers(Sdg sdg, List<Sdg.Layer> layers, int depth) {
+        for (Sdg.Layer l : layers) {
             String n = "layer \"" + l.name() + "\"";
             if (!(l.opacity() >= 0 && l.opacity() <= 1)) {
                 throw new IllegalArgumentException(n + " of opacity " + l.opacity() + ", outside 0 to 1");
             }
-            Sdg.Stencil s = l.stencil();
-            rect(sdg, n + "'s stencil", s.page(), s.x(), s.y(), s.width(), s.height(), s.originX(), s.originY(),
-                    s.scale());
-            if (s.channel() < 0 || s.channel() > 3) {
-                throw new IllegalArgumentException(n + "'s stencil reads channel " + s.channel());
+            if (l.isGroup()) {
+                if (depth + 1 > Sdg.Group.MAX_DEPTH) {
+                    throw new IllegalArgumentException(n + " nests groups past " + Sdg.Group.MAX_DEPTH + " deep");
+                }
+                if (l.group().clip() != null) {
+                    stencil(sdg, n + "'s clip", l.group().clip());
+                }
+                if (l.group().mask() != null) {
+                    layers(sdg, l.group().mask().layers(), depth + 1);
+                }
+                layers(sdg, l.group().layers(), depth + 1);
+                continue;
             }
-            if (!(s.range() > 0) || !Double.isFinite(s.range())) {
-                throw new IllegalArgumentException(n + "'s stencil has a range of " + s.range());
-            }
+            stencil(sdg, n + "'s stencil", l.stencil());
             if (l.paint() instanceof Sdg.Paint.Sampled p) {
                 rect(sdg, n + "'s paint", p.page(), p.x(), p.y(), p.width(), p.height(), p.originX(), p.originY(),
                         p.scale());
             }
         }
-        return sdg;
+    }
+
+    private static void stencil(Sdg sdg, String what, Sdg.Stencil s) {
+        rect(sdg, what, s.page(), s.x(), s.y(), s.width(), s.height(), s.originX(), s.originY(), s.scale());
+        if (s.channel() < 0 || s.channel() > 3) {
+            throw new IllegalArgumentException(what + " reads channel " + s.channel());
+        }
+        if (!(s.range() > 0) || !Double.isFinite(s.range())) {
+            throw new IllegalArgumentException(what + " has a range of " + s.range());
+        }
     }
 
     private static void rect(Sdg sdg, String what, int page, int x, int y, int w, int h, double ox, double oy,
@@ -230,11 +250,28 @@ public final class SdgFile {
             for (Sdg.Page p : sdg.pages()) {
                 pages.add(new dev.vexelray.fields.sdg.schema.Page(Png.encode(p)));
             }
+            return new Drawing(sdg.width(), sdg.height(), pages, toSchema(sdg.layers()));
+        }
+
+        private static dev.vexelray.fields.sdg.schema.Stencil toSchema(Sdg.Stencil s) {
+            return new dev.vexelray.fields.sdg.schema.Stencil(s.kind(), s.page(), s.channel(), s.x(), s.y(), s.width(),
+                    s.height(), s.originX(), s.originY(), s.scale(), (float) s.range());
+        }
+
+        private static List<dev.vexelray.fields.sdg.schema.Layer> toSchema(List<Sdg.Layer> from) {
             List<dev.vexelray.fields.sdg.schema.Layer> layers = new ArrayList<>();
-            for (Sdg.Layer l : sdg.layers()) {
-                Sdg.Stencil s = l.stencil();
-                var stencil = new dev.vexelray.fields.sdg.schema.Stencil(s.kind(), s.page(), s.channel(), s.x(),
-                        s.y(), s.width(), s.height(), s.originX(), s.originY(), s.scale(), (float) s.range());
+            for (Sdg.Layer l : from) {
+                var stencil = toSchema(l.stencil());
+                if (l.isGroup()) {
+                    Sdg.Group g = l.group();
+                    var mask = g.mask() == null ? null
+                            : new dev.vexelray.fields.sdg.schema.Mask(g.mask().kind(), toSchema(g.mask().layers()));
+                    var group = new dev.vexelray.fields.sdg.schema.Group(toSchema(g.layers()),
+                            g.clip() == null ? null : toSchema(g.clip()), mask);
+                    layers.add(new dev.vexelray.fields.sdg.schema.Layer(l.name(), l.opacity(), stencil,
+                            new dev.vexelray.fields.sdg.schema.Paint(Sdg.Stencil.GROUP, null, null), group));
+                    continue;
+                }
                 var paint = switch (l.paint()) {
                     case Sdg.Paint.Solid c -> new dev.vexelray.fields.sdg.schema.Paint("solid",
                             new dev.vexelray.fields.sdg.schema.Solid(c.rgba(), c.role().isEmpty() ? null : c.role()),
@@ -245,9 +282,9 @@ public final class SdgFile {
                     case Sdg.Paint.Unknown u -> throw new IllegalArgumentException(
                             "a paint of kind " + u.kind() + " has nothing to write");
                 };
-                layers.add(new dev.vexelray.fields.sdg.schema.Layer(l.name(), l.opacity(), stencil, paint));
+                layers.add(new dev.vexelray.fields.sdg.schema.Layer(l.name(), l.opacity(), stencil, paint, null));
             }
-            return new Drawing(sdg.width(), sdg.height(), pages, layers);
+            return layers;
         }
 
         static Sdg fromSchema(Drawing d) {
@@ -255,11 +292,25 @@ public final class SdgFile {
             for (var p : d.pages()) {
                 pages.add(Png.decode(p.png()));
             }
+            return new Sdg(d.width(), d.height(), pages, fromSchema(d.layers()));
+        }
+
+        private static Sdg.Stencil fromSchema(dev.vexelray.fields.sdg.schema.Stencil s) {
+            return new Sdg.Stencil(s.kind(), s.page(), s.channel(), s.x(), s.y(), s.width(), s.height(), s.originX(),
+                    s.originY(), s.scale(), s.range());
+        }
+
+        private static List<Sdg.Layer> fromSchema(List<dev.vexelray.fields.sdg.schema.Layer> from) {
             List<Sdg.Layer> layers = new ArrayList<>();
-            for (var l : d.layers()) {
-                var s = l.stencil();
-                Sdg.Stencil stencil = new Sdg.Stencil(s.kind(), s.page(), s.channel(), s.x(), s.y(), s.width(),
-                        s.height(), s.originX(), s.originY(), s.scale(), s.range());
+            for (var l : from) {
+                if (l.group() != null) {
+                    var g = l.group();
+                    Sdg.Mask mask = g.mask() == null ? null : new Sdg.Mask(g.mask().kind(), fromSchema(g.mask().layers()));
+                    layers.add(Sdg.Layer.group(l.name(), l.opacity(), new Sdg.Group(fromSchema(g.layers()),
+                            g.clip() == null ? null : fromSchema(g.clip()), mask)));
+                    continue;
+                }
+                Sdg.Stencil stencil = fromSchema(l.stencil());
                 var p = l.paint();
                 Sdg.Paint paint = switch (p.kind()) {
                     case "solid" -> {
@@ -281,7 +332,7 @@ public final class SdgFile {
                 };
                 layers.add(new Sdg.Layer(l.name(), stencil, paint, l.opacity()));
             }
-            return new Sdg(d.width(), d.height(), pages, layers);
+            return layers;
         }
     }
 }

@@ -32,10 +32,86 @@ public final class SdgRender {
     public static Raster render(Sdg sdg, int width, int height, double originX, double originY,
                                 double unitsPerPixel) {
         float[] px = new float[width * height * 4];   // premultiplied
+        draw(sdg, sdg.layers(), px, width, height, originX, originY, unitsPerPixel);
+        byte[] rgba = new byte[px.length];
+        for (int o = 0; o < px.length; o += 4) {
+            float a = px[o + 3];
+            float inv = a > 0 ? 1 / a : 0;
+            rgba[o] = byte8(px[o] * inv);
+            rgba[o + 1] = byte8(px[o + 1] * inv);
+            rgba[o + 2] = byte8(px[o + 2] * inv);
+            rgba[o + 3] = byte8(a);
+        }
+        return new Raster(width, height, rgba);
+    }
+
+    /** {@code layers}, back to front, over {@code px}: premultiplied, {@code width × height}. */
+    private static void draw(Sdg sdg, java.util.List<Sdg.Layer> layers, float[] px, int width, int height,
+                             double originX, double originY, double unitsPerPixel) {
+        for (Sdg.Layer layer : layers) {
+            if (layer.isGroup()) {
+                group(sdg, layer, px, width, height, originX, originY, unitsPerPixel);
+            } else {
+                shape(sdg, layer, px, width, height, originX, originY, unitsPerPixel);
+            }
+        }
+    }
+
+    /**
+     * A group (spec §2, since 1.2): its layers drawn apart into {@code g}, its mask's into {@code m}; then per pixel
+     * {@code g · (opacity · k · c)} over {@code px}, {@code k} the mask's luminance (the luma of its premultiplied colour,
+     * which is the luma of its colour times its alpha) or its alpha, and {@code c} the clip's coverage.
+     */
+    private static void group(Sdg sdg, Sdg.Layer layer, float[] px, int width, int height, double originX,
+                              double originY, double unitsPerPixel) {
+        Sdg.Group grp = layer.group();
+        if (layer.opacity() <= 0 || grp.mask() != null && !grp.mask().known()) {
+            return;   // nothing to see; a mask of a kind this reader does not know hides its group, as an unknown layer is skipped
+        }
+        float[] g = new float[px.length];
+        draw(sdg, grp.layers(), g, width, height, originX, originY, unitsPerPixel);
+        float[] m = null;
+        if (grp.mask() != null) {
+            m = new float[px.length];
+            draw(sdg, grp.mask().layers(), m, width, height, originX, originY, unitsPerPixel);
+        }
+        boolean luminance = grp.mask() != null && grp.mask().kind().equals(Sdg.Mask.LUMINANCE);
+        Sdg.Stencil clip = grp.clip() != null && grp.clip().known() ? grp.clip() : null;
+        Sdg.Page clipPage = clip == null ? null : sdg.pages().get(clip.page());
+        for (int j = 0; j < height; j++) {
+            double cy = originY + (j + 0.5) * unitsPerPixel;
+            for (int i = 0; i < width; i++) {
+                int o = (j * width + i) * 4;
+                if (g[o + 3] <= 0) {
+                    continue;
+                }
+                float f = layer.opacity();
+                if (m != null) {
+                    f *= luminance ? 0.2126f * m[o] + 0.7152f * m[o + 1] + 0.0722f * m[o + 2] : m[o + 3];
+                }
+                if (clip != null) {
+                    double cx = originX + (i + 0.5) * unitsPerPixel;
+                    double d = distance(clip, clipPage, cx, cy);
+                    f *= (float) Math.clamp(0.5 + d / clip.scale() / unitsPerPixel, 0, 1);
+                }
+                if (f <= 0) {
+                    continue;
+                }
+                float keep = 1 - g[o + 3] * f;
+                for (int c = 0; c < 4; c++) {
+                    px[o + c] = g[o + c] * f + px[o + c] * keep;
+                }
+            }
+        }
+    }
+
+    /** A shape: its stencil's coverage, times its paint's alpha and its opacity, of its paint's colour, over {@code px}. */
+    private static void shape(Sdg sdg, Sdg.Layer layer, float[] px, int width, int height, double originX,
+                              double originY, double unitsPerPixel) {
         float[] colour = new float[4];
-        for (Sdg.Layer layer : sdg.layers()) {
+        {
             if (!layer.known() || layer.opacity() <= 0) {
-                continue;
+                return;
             }
             Sdg.Stencil s = layer.stencil();
             Sdg.Page page = sdg.pages().get(s.page());
@@ -66,16 +142,6 @@ public final class SdgRender {
                 }
             }
         }
-        byte[] rgba = new byte[px.length];
-        for (int o = 0; o < px.length; o += 4) {
-            float a = px[o + 3];
-            float inv = a > 0 ? 1 / a : 0;
-            rgba[o] = byte8(px[o] * inv);
-            rgba[o + 1] = byte8(px[o + 1] * inv);
-            rgba[o + 2] = byte8(px[o + 2] * inv);
-            rgba[o + 3] = byte8(a);
-        }
-        return new Raster(width, height, rgba);
     }
 
     /**

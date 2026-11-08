@@ -64,6 +64,7 @@ public final class Catalogue {
             add(m, "svgToSdg", Convert.svgToSdg(t), Inputs::badgeSvg, "badge, " + tl + " across");
             add(m, "maskToSdf", Convert.maskToSdf(t / 8), () -> Inputs.starMask(t, 8), "star, " + tl + " × 8");
             add(m, "maskToShape", Convert.maskToShape(0.25), () -> Inputs.starMask(t, 8), "star, " + tl + " × 8");
+            add(m, "maskToCells", Convert.maskToCells(), () -> Inputs.starMask(t, 8), "star, " + tl + " × 8");
             add(m, "widen", Convert.widen(FieldKind.MTSDF), () -> Inputs.starField(FieldKind.SDF, t),
                     "star SDF, " + tl);
             int px = t * 8;
@@ -119,6 +120,13 @@ public final class Catalogue {
                         List.of(new Convert.Small(24, Inputs.badge()))), Inputs::badge,
                 "badge, the 10 Windows icon sizes, a small drawing to 24");
         add(m, "icon", Convert.icon(), Inputs::badgeSizes, "badge, the 10 Windows icon sizes");
+        for (int side : new int[]{64, 256}) {
+            add(m, "svgToRaster", Convert.svgToRaster(side, side), Inputs::badgeSvg, "badge, " + side + " px");
+        }
+        add(m, "svgToRasterSizes", Convert.svgToRasterSizes(Icon.WINDOWS, List.of()), Inputs::badgeSvg,
+                "badge, the 10 Windows icon sizes");
+        add(m, "svgToIcon", Convert.svgToIcon(Icon.WINDOWS, List.of()), Inputs::badgeSvg,
+                "badge, the 10 Windows icon sizes");
         add(m, "sdgToIcon", Convert.sdgToIcon(Icon.WINDOWS, List.of()), Inputs::badge,
                 "badge, the 10 Windows icon sizes");
         for (int f : new int[]{48, 104}) {

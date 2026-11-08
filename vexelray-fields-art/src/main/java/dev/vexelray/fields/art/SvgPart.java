@@ -11,7 +11,7 @@ import java.util.Optional;
  * with. {@link Svg#parts} lists a drawing's parts in the order they are painted, for whatever keeps a drawing as layers
  * rather than pixels.
  */
-public final class SvgPart {
+public final class SvgPart implements SvgNode {
 
     private final Path path;          // in view-box units
     private final boolean stroke;

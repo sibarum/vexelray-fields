@@ -36,6 +36,18 @@ final class MaskTrace {
         if (!(flatness >= 0)) {
             throw new IllegalArgumentException("a flatness of " + flatness);
         }
+        return outline(m, flatness, false);
+    }
+
+    /**
+     * The mask's own samples as squares: its boundary exactly, a vertex at every corner the cracks turn and none
+     * between, as pixel art is drawn. Holes and the left turn where samples touch diagonally are as {@link #trace}'s.
+     */
+    static Shape cells(Mask m) {
+        return outline(m, 0, true);
+    }
+
+    private static Shape outline(Mask m, double flatness, boolean cells) {
         int w = m.width(), h = m.height(), vw = w + 1;
         int[] out = new int[vw * (h + 1) * 2];
         Arrays.fill(out, -1);
@@ -66,13 +78,13 @@ final class MaskTrace {
             if (out[start] < 0 || used[start]) {
                 continue;
             }
-            List<double[]> pts = new ArrayList<>();
+            List<int[]> cracks = new ArrayList<>();
             int slot = start;
             while (true) {
                 used[slot] = true;
                 int v = slot / 2, d = out[slot];
                 int x = v % vw, y = v / vw;
-                pts.add(new double[]{x + 0.5 * DX[d], y + 0.5 * DY[d]});
+                cracks.add(new int[]{x, y, d});
                 int next = (y + DY[d]) * vw + x + DX[d];
                 int chosen = -1;
                 for (int turn : new int[]{3, 0, 1}) {
@@ -92,7 +104,17 @@ final class MaskTrace {
                 }
                 slot = chosen;
             }
-            double[][] kept = refit(pts, runs(pts, 1 + flatness));
+            List<double[]> pts = new ArrayList<>();
+            int n = cracks.size();
+            for (int i = 0; i < n; i++) {
+                int[] c = cracks.get(i);
+                if (!cells) {
+                    pts.add(new double[]{c[0] + 0.5 * DX[c[2]], c[1] + 0.5 * DY[c[2]]});
+                } else if (c[2] != cracks.get((i + n - 1) % n)[2]) {
+                    pts.add(new double[]{c[0], c[1]});   // a corner: the crack before ran another way
+                }
+            }
+            double[][] kept = cells ? pts.toArray(new double[0][]) : refit(pts, runs(pts, 1 + flatness));
             if (kept.length < 3) {
                 continue;
             }

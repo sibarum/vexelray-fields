@@ -640,6 +640,137 @@ public final class Svg {
         return s;
     }
 
+    // ---------------------------------------------------------------------------------------------------- tree
+
+    /**
+     * Every fill and stroke the drawing paints, as {@link #parts} lists them, but kept in the groups they are drawn in
+     * apart: an element with a group opacity under 1, a {@code clip-path} or a {@code mask} is a {@link SvgGroup} of
+     * what it draws, its clip's shapes and its mask's content beside. So a drawing {@link #parts} refuses is a tree
+     * here, every part in its place. A mask or clip path in {@code objectBoundingBox} units is refused, as
+     * {@link #render} refuses it.
+     */
+    public List<SvgNode> tree() {
+        List<SvgNode> out = new ArrayList<>();
+        new Treer().children(root, Affine.IDENTITY, Style.initial().with(root, this), out);
+        return out;
+    }
+
+    /** Lists a drawing's paints in their groups, for {@link #tree}: a {@link Parter} for the parts themselves. */
+    private final class Treer {
+
+        private final List<SvgPart> parts = new ArrayList<>();
+        private final Parter parter = new Parter(parts);
+        private int depth;
+
+        void children(Element parent, Affine ctm, Style style, List<SvgNode> out) {
+            for (Element c : Svg.children(parent)) {
+                element(c, ctm, style, out);
+            }
+        }
+
+        void element(Element e, Affine ctm, Style inherited, List<SvgNode> out) {
+            refuse(e);
+            String n = name(e);
+            if (QUIET.contains(n) || "none".equals(Style.property(e, "display"))) {
+                return;
+            }
+            if (!n.equals("g") && !n.equals("a") && !n.equals("use") && !SHAPES.contains(n)) {
+                throw new IllegalArgumentException("<" + n + "> is not drawn here");
+            }
+            if (++depth > 64) {
+                throw new IllegalArgumentException("the drawing refers to itself, or nests past 64 deep");
+            }
+            String was = parter.owner;
+            if (parter.owner == null && !e.getAttribute("id").isEmpty()) {
+                parter.owner = e.getAttribute("id");
+            }
+            try {
+                Style style = inherited.with(e, Svg.this);
+                Affine m = ctm.times(own(e));
+                String maskRef = Style.property(e, "mask"), clipRef = Style.property(e, "clip-path");
+                boolean masked = maskRef != null && !maskRef.equals("none");
+                boolean clipped = clipRef != null && !clipRef.equals("none");
+                // a shape's own opacity is its parts' (exact unless its fill and stroke overlap); a group's is the group's
+                boolean faded = style.opacity < 1 && !SHAPES.contains(n);
+                boolean alone = masked || clipped || faded;
+                List<SvgNode> into = alone ? new ArrayList<>() : out;
+                if (n.equals("use")) {
+                    element(used(e), m, style, into);
+                } else if (!SHAPES.contains(n)) {
+                    children(e, m, style, into);
+                } else {
+                    parts.clear();
+                    parter.shape(e, m, style);
+                    into.addAll(parts);
+                }
+                if (alone) {
+                    List<SvgPart> clip = clipped ? clip(referenced(clipRef, "clip-path"), m) : List.of();
+                    List<SvgNode> mask = new ArrayList<>();
+                    String kind = null;
+                    if (masked) {
+                        Element me = referenced(maskRef, "mask");
+                        if ("objectBoundingBox".equals(me.getAttribute("maskContentUnits").strip())) {
+                            throw new IllegalArgumentException("a <mask> in objectBoundingBox content units is not"
+                                    + " drawn here");
+                        }
+                        String type = Style.property(me, "mask-type");
+                        kind = "alpha".equals(type) ? "alpha" : "luminance";
+                        children(me, m.times(own(me)), styleAt(me), mask);
+                    }
+                    String id = e.getAttribute("id").isEmpty() ? parter.owner : e.getAttribute("id");
+                    out.add(new SvgGroup(id, faded ? style.opacity : 1f, clip, kind, mask, into));
+                }
+            } finally {
+                parter.owner = was;
+                depth--;
+            }
+        }
+
+        /** A clip path's shapes, each an opaque fill by the clip rule, in view-box units: their union is the clip. */
+        private List<SvgPart> clip(Element clipPath, Affine m) {
+            if ("objectBoundingBox".equals(clipPath.getAttribute("clipPathUnits").strip())) {
+                throw new IllegalArgumentException("a <clipPath> in objectBoundingBox units is not drawn here");
+            }
+            List<SvgPart> out = new ArrayList<>();
+            clipInto(clipPath, m.times(own(clipPath)), styleAt(clipPath), out, true);
+            return out;
+        }
+
+        private void clipInto(Element e, Affine m, Style inherited, List<SvgPart> out, boolean top) {
+            if (top) {
+                for (Element c : Svg.children(e)) {
+                    clipInto(c, m, inherited, out, false);
+                }
+                return;
+            }
+            refuse(e);
+            String n = name(e);
+            if (n.equals("use")) {
+                clipInto(used(e), m.times(own(e)), inherited.with(e, Svg.this), out, false);
+                return;
+            }
+            if (!SHAPES.contains(n)) {
+                throw new IllegalArgumentException("<" + n + "> in a <clipPath> is not drawn here");
+            }
+            if (e.hasAttribute("clip-path")) {
+                throw new IllegalArgumentException("a clip inside a <clipPath> is not drawn here");
+            }
+            Style style = inherited.with(e, Svg.this);
+            Path path = geometry(e);
+            if (path == null || !style.visible || n.equals("line") || "none".equals(Style.property(e, "display"))) {
+                return;
+            }
+            float[] white = {1, 1, 1};
+            out.add(new SvgPart(path.mapped(m.times(own(e))::apply), false, style.clipEvenOdd, 0, null, null, 0,
+                    null, 0, (x, y, c) -> {
+                        c[0] = 1;
+                        c[1] = 1;
+                        c[2] = 1;
+                        c[3] = 1;
+                    }, white, 1f, null));
+        }
+    }
+
     // ---------------------------------------------------------------------------------------------------- parts
 
     /** Lists a drawing's paints one by one, for {@link #parts}. */

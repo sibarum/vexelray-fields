@@ -1,6 +1,6 @@
 # SDG: signed distance graphics
 
-**Version 1.1, draft.** What SVG is to paths, SDG is to distance fields: a drawing in layers, each layer a shape and
+**Version 1.2, draft.** What SVG is to paths, SDG is to distance fields: a drawing in layers, each layer a shape and
 a colour, that stays sharp at any size. The difference is what a layer's shape is. In SVG it is an outline, to be
 filled at draw time. In SDG it is a distance field, sampled once per pixel by a shader with no tessellation and no
 path rasteriser, as the stack already draws its icons and glyphs.
@@ -23,6 +23,17 @@ A layer is:
 | **stencil** | where the layer is: a signed distance field, its edge where the distance is zero, positive inside |
 | **paint** | what colour it is there: one colour, or a colour texture |
 | **opacity** | `0..1`, times everything else |
+
+Since 1.2, a layer may instead be a **group**: its own list of layers, shapes and groups alike, composited apart and
+laid over once, with
+
+| part | what it is |
+|---|---|
+| **opacity** | `0..1`, applied once to the group's composite, so where its layers overlap only the top one shows through |
+| **clip** | optional: a stencil, as a layer's (§3.1); the composite is cut to its coverage |
+| **mask** | optional: a list of layers drawn apart, the composite multiplied by their `luminance` or their `alpha` |
+
+Groups nest at most 16 deep.
 
 All texels live in **pages**: RGBA8 images, any size up to 65535 × 65535 (an encoder keeps to 4096, what every Vulkan
 device takes). A stencil or a sampled paint names a rectangle of one page, and maps it onto the canvas by an **origin**
@@ -47,6 +58,12 @@ derivative of `p`):
    3. **Coverage.** `a = clamp(0.5 + (d / scale) / upp, 0, 1)`: the edge cut half a pixel either side.
    4. **Colour.** `c`, straight RGBA in `0..1`, from the paint at `p` (§3.2).
    5. **Over.** With `α = a · c.a · opacity`: `dst.rgb = c.rgb · α + dst.rgb · (1 − α)`, `dst.a = α + dst.a · (1 − α)`.
+   A **group** (since 1.2) is drawn instead as: draw its layers by this section into their own `g`, starting from
+   transparent; if it has a mask, draw the mask's layers likewise into `m`, and `k` is `m`'s luminance (the Rec. 709
+   luma of its premultiplied colour, `0.2126 r + 0.7152 g + 0.0722 b`, which is the luma of its colour times its alpha)
+   or its alpha, by the mask's kind, else `k = 1`; if it has a clip, `c` is the clip stencil's coverage at `p` (steps 1
+   to 3), else `c = 1`. Then with `f = opacity · k · c`: `dst = g · f + dst · (1 − g.a · f)`. A mask of a kind the
+   reader does not know hides its group.
 3. `dst` is the pixel, premultiplied.
 
 Colour is blended as it is stored, sRGB-encoded, as SVG and browsers blend by default; a page is read as UNORM, never
@@ -103,7 +120,7 @@ nothing.
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
-<sdg xmlns="https://sibarum.github.io/ns/sdg" version="1.1" width="100" height="100">
+<sdg xmlns="https://sibarum.github.io/ns/sdg" version="1.2" width="100" height="100">
   <page id="p0" width="104" height="134" href="badge-p0.png"/>
   <page id="p1" width="76" height="68" href="data:image/png;base64,iVBORw0KGgo..."/>
   <layer name="sky">
@@ -114,17 +131,28 @@ nothing.
     <stencil kind="msdf" page="p0" x="68" y="68" width="29" height="29" origin="45.3125 10.9375" scale="0.64" range="8"/>
     <paint kind="solid" colour="#ffcc33" role="accent"/>
   </layer>
+  <group name="glow" opacity="0.5">
+    <clip kind="sdf" page="p0" x="0" y="68" width="40" height="40" origin="10 10" scale="0.64" range="8"/>
+    <mask kind="luminance">
+      <layer name="fade">...</layer>
+    </mask>
+    <layer name="ring">...</layer>
+  </group>
 </sdg>
 ```
 
 The namespace is `https://sibarum.github.io/ns/sdg`; the root is `<sdg>`. Its children, in any order, are `<page>`s
-and `<layer>`s; pages are numbered in the order they appear, and a layer names a page that comes before it.
+`<layer>`s and (since 1.2) `<group>`s; pages are numbered in the order they appear, and a layer names a page that
+comes before it. A reader of 1.1 skips a `<group>` whole, as any element it does not know.
 
 | element | attributes (**bold**: required) |
 |---|---|
 | `sdg` | **`version`** `major.minor`; **`width`**, **`height`** in units |
 | `page` | **`id`**, any name unique in the file; **`href`**, the PNG (below); `width`, `height`, which if given must be the PNG's |
 | `layer` | `name` (default empty); `opacity` (default 1). Holds exactly one `stencil` and one `paint` |
+| `group` | since 1.2: `name`; `opacity` (default 1). Holds at most one `clip`, at most one `mask`, and its `layer`s and `group`s in order |
+| `clip` | a stencil's attributes, as `stencil` |
+| `mask` | `kind`, `luminance` (default) or `alpha`. Holds `layer`s and `group`s |
 | `stencil` | **`kind`**; **`page`**, a page's `id`; `channel` (default 0); **`x`**, **`y`**, **`width`**, **`height`** in texels of that page; `origin`, two numbers in units, apart by white space or a comma (default `0 0`); `scale`, texels a unit (default 1); **`range`** in texels |
 | `paint`, `kind="solid"` | **`colour`**: `#rgb`, `#rgba`, `#rrggbb` or `#rrggbbaa`, straight, alpha `ff` if left out; `role` (default none, §3.2) |
 | `paint`, `kind="sampled"` | **`page`**, **`x`**, **`y`**, **`width`**, **`height`**, `origin`, `scale`, as a stencil's |
@@ -145,13 +173,18 @@ the records of `dev.vexelray.fields.sdg.schema`; in intrabuf's types, fields in 
 
 | message | fields |
 |---|---|
-| `vexelray.sdg.Drawing` 1.1 | `float64` width, `float64` height, `list<Page>` pages, `list<Layer>` layers |
+| `vexelray.sdg.Drawing` 1.2 | `float64` width, `float64` height, `list<Page>` pages, `list<Layer>` layers |
 | `vexelray.sdg.Page` | `bytes` png, as in §4.1 |
-| `vexelray.sdg.Layer` | `string` name, `float32` opacity, `Stencil` stencil, `Paint` paint |
+| `vexelray.sdg.Layer` 1.1 | `string` name, `float32` opacity, `Stencil` stencil, `Paint` paint; since 1, `Group` group (absent for a shape) |
 | `vexelray.sdg.Stencil` | `string` kind, `int32` page, channel, x, y, width, height, `float64` originX, originY, scale, `float32` range |
 | `vexelray.sdg.Paint` | `string` kind, `Solid` solid (or absent), `Sampled` sampled (or absent): the one its kind names |
 | `vexelray.sdg.Solid` 1.1 | `fixed32` rgba, `0xRRGGBBAA`; since 1, `string` role (absent for none) |
 | `vexelray.sdg.Sampled` | `int32` page, x, y, width, height, `float64` originX, originY, scale |
+| `vexelray.sdg.Group` | `list<Layer>` layers, `Stencil` clip (or absent), `Mask` mask (or absent) |
+| `vexelray.sdg.Mask` | `string` kind, `list<Layer>` layers |
+
+A group layer's stencil is of the kind `group`, one texel of page 0, and its paint of the kind `group`: a reader of 1.1
+finds the rectangle in its page, does not know the kind, and skips the layer, drawing the rest.
 
 ### 4.3 Compatibility
 
@@ -228,9 +261,9 @@ rectangle and let the GPU blend, or draw the whole canvas as one quad and loop o
   would be smaller and exact.
 * **MTSDF stencils**, the true distance in alpha, for effects (glows, shadows, outlines) that need distance far from
   the edge (see the README, *Log space* and *Past the texture's edge*).
-* **Groups**: a layer list composited apart and laid over with one opacity, mask or clip, so every SVG converts.
 * **Sharp corners from a raster.** A traced raster's stencils are SDFs from a mask, so its corners are as round as the
   raster's pixels make them, and a feature thinner than half a pixel is lost. Fitting curves and corners to a region's
-  outline, then making an MSDF from those, would sharpen them.
+  outline, then making an MSDF from those, would sharpen them. The conversion that does it now exists (Mask → Shape → MSDF,
+  `Convert.maskToShape`, see [`conversions.md`](conversions.md)); `Trace` does not use it yet.
 * **A `.vxa` item.** The same model as an item kind of `vexelray-codec-asset`'s file, beside its `DistanceField`, so an
   asset carries its drawings.

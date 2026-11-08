@@ -29,8 +29,24 @@ final class Assembly {
     private record Pending(String name, Stencil stencil, Sdg.Paint solid, Texture texture, float opacity) {
     }
 
+    /**
+     * Where a packed stencil goes in the drawing: a {@link Shape} is the layer of pending item {@code index}; a
+     * {@link Group} is a group of nodes, its clip the stencil of pending item {@code clip} (or -1 for none) and its mask
+     * nodes of {@code maskKind} (or null for none).
+     */
+    sealed interface Node permits Shape, Group {
+    }
+
+    record Shape(int index) implements Node {
+    }
+
+    record Group(String name, float opacity, int clip, String maskKind, List<Node> mask, List<Node> children)
+            implements Node {
+    }
+
     private final double width, height;
     private final List<Pending> layers = new ArrayList<>();
+    private final List<Node> root = new ArrayList<>();
 
     Assembly(double width, double height) {
         this.width = width;
@@ -38,14 +54,26 @@ final class Assembly {
     }
 
     void add(String name, Stencil stencil, Sdg.Paint.Solid solid, float opacity) {
-        layers.add(new Pending(name, stencil, solid, null, opacity));
+        root.add(new Shape(pend(name, stencil, solid, null, opacity)));
     }
 
     void add(String name, Stencil stencil, Texture texture, float opacity) {
-        layers.add(new Pending(name, stencil, null, texture, opacity));
+        root.add(new Shape(pend(name, stencil, null, texture, opacity)));
     }
 
+    /** A stencil to pack, placed nowhere yet: its index, for a {@link Node}. Neither paint, for a clip. */
+    int pend(String name, Stencil stencil, Sdg.Paint.Solid solid, Texture texture, float opacity) {
+        layers.add(new Pending(name, stencil, solid, texture, opacity));
+        return layers.size() - 1;
+    }
+
+    /** Every layer added, in order, packed. */
     Sdg build() {
+        return build(root);
+    }
+
+    /** Every pending stencil packed, and the drawing laid out as {@code nodes} say. */
+    Sdg build(List<Node> nodes) {
         List<Sdg.Page> pages = new ArrayList<>();
         int n = layers.size();
         Spot[] stencilAt = new Spot[n], textureAt = new Spot[n];
@@ -120,7 +148,8 @@ final class Assembly {
             pages.add(new Sdg.Page(bin.width, bin.used, rgba));
         }
 
-        List<Sdg.Layer> out = new ArrayList<>();
+        Sdg.Stencil[] placed = new Sdg.Stencil[n];
+        Sdg.Layer[] shaped = new Sdg.Layer[n];
         for (int i = 0; i < n; i++) {
             Pending p = layers.get(i);
             Field f = p.stencil.field();
@@ -128,6 +157,7 @@ final class Assembly {
             Sdg.Stencil stencil = new Sdg.Stencil(f.kind() == FieldKind.SDF ? Sdg.Stencil.SDF : Sdg.Stencil.MSDF,
                     s.page, s.channel, s.x, s.y, f.width(), f.height(), p.stencil.originX(), p.stencil.originY(),
                     p.stencil.scale(), p.stencil.range());
+            placed[i] = stencil;
             Sdg.Paint paint = p.solid;
             if (p.texture != null) {
                 Spot t = textureAt[i];
@@ -135,9 +165,22 @@ final class Assembly {
                 paint = new Sdg.Paint.Sampled(t.page, t.x, t.y, tx.width(), tx.height(), tx.originX(), tx.originY(),
                         tx.scale());
             }
-            out.add(new Sdg.Layer(p.name, stencil, paint, p.opacity));
+            shaped[i] = paint == null ? null : new Sdg.Layer(p.name, stencil, paint, p.opacity);
         }
-        return new Sdg(width, height, pages, out);
+        return new Sdg(width, height, pages, laid(nodes, placed, shaped));
+    }
+
+    private static List<Sdg.Layer> laid(List<Node> nodes, Sdg.Stencil[] placed, Sdg.Layer[] shaped) {
+        List<Sdg.Layer> out = new ArrayList<>();
+        for (Node node : nodes) {
+            switch (node) {
+                case Shape s -> out.add(shaped[s.index()]);
+                case Group g -> out.add(Sdg.Layer.group(g.name(), g.opacity(), new Sdg.Group(
+                        laid(g.children(), placed, shaped), g.clip() < 0 ? null : placed[g.clip()],
+                        g.maskKind() == null ? null : new Sdg.Mask(g.maskKind(), laid(g.mask(), placed, shaped)))));
+            }
+        }
+        return out;
     }
 
     private record Spot(int page, int channel, int x, int y) {

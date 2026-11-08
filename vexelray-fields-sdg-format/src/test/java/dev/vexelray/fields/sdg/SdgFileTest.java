@@ -84,7 +84,7 @@ class SdgFileTest {
         // compiled from the XML and back, nothing lost either way
         assertEquals(xml, SdgFile.xml(SdgFile.read(SdgFile.bytes(SdgFile.read(xml.getBytes(StandardCharsets.UTF_8))))));
         assertTrue(xml.contains("role=\"accent\""), xml);
-        assertTrue(xml.contains("<sdg xmlns=\"https://sibarum.github.io/ns/sdg\" version=\"1.1\""), xml);
+        assertTrue(xml.contains("<sdg xmlns=\"https://sibarum.github.io/ns/sdg\" version=\"" + Sdg.MAJOR + "." + Sdg.MINOR + "\""), xml);
     }
 
     /** One page of one texel and two solid layers, the second in a role. */
@@ -176,7 +176,7 @@ class SdgFileTest {
                     <paint kind="solid" colour="#11223344"/>
                     <filter kind="blur"/>
                   </layer>
-                  <group opacity="0.5"/>
+                  <blend mode="multiply"/>
                 </sdg>
                 """.formatted(png);
         Sdg sdg = SdgFile.read(xml.getBytes(StandardCharsets.UTF_8));
@@ -201,9 +201,9 @@ class SdgFileTest {
         FutureStencil s = new FutureStencil("sdf", 0, 1, 0, 0, 8, 8, 0, 0, 1, 4, 0.5f);
         FutureDrawing later = new FutureDrawing(8, 8, List.of(new Page(Png.encode(page(8, 8, 4)))), List.of(
                 new FutureLayer("old", 1, s, new FuturePaint("solid", new Solid(0x123456FF, "foreground"), null,
-                        null), "multiply"),
+                        null), null, "multiply"),
                 new FutureLayer("new", 0.5f, s, new FuturePaint("linear", null, null,
-                        new FutureLinear(0, 0, 8, 8, List.of(0xFFFFFFFF, 0x000000FF))), null)),
+                        new FutureLinear(0, 0, 8, 8, List.of(0xFFFFFFFF, 0x000000FF))), null, null)),
                 "someone");
         byte[] payload = FutureDrawingIntrabuf.toBytes(later);
         byte[] file = Arrays.copyOf(SdgFile.SIGNATURE, SdgFile.SIGNATURE.length + payload.length);
@@ -221,7 +221,7 @@ class SdgFileTest {
 
     @Test
     void aNewerMajorIsRefusedWhole() {
-        String xml = SdgFile.xml(drawing()).replace("version=\"1.1\"", "version=\"2.0\"");
+        String xml = SdgFile.xml(drawing()).replace("version=\"" + Sdg.MAJOR + "." + Sdg.MINOR + "\"", "version=\"2.0\"");
         assertThrows(IllegalArgumentException.class, () -> SdgFile.read(xml.getBytes(StandardCharsets.UTF_8)));
 
         byte[] compiled = SdgFile.bytes(drawing());

@@ -20,7 +20,7 @@ import java.util.List;
 public record Sdg(double width, double height, List<Page> pages, List<Layer> layers) {
 
     /** What the stack reads today: the major version a reader must know, and the minor it was written at. */
-    public static final int MAJOR = 1, MINOR = 1;
+    public static final int MAJOR = 1, MINOR = 2;
 
     public Sdg {
         if (!(width > 0) || !(height > 0)) {
@@ -28,6 +28,48 @@ public record Sdg(double width, double height, List<Page> pages, List<Layer> lay
         }
         pages = List.copyOf(pages);
         layers = List.copyOf(layers);
+    }
+
+    /**
+     * This drawing with each layer named in {@code roles} painted in the theme role it maps to ({@code "face"} to
+     * {@code "ink"}), its colour kept for a reader with no such role: how a drawing made from an SVG, whose layers are
+     * named after its elements' ids, follows a theme. Only a solid paint takes a role; a name no layer has, or a layer
+     * whose paint is not solid, is refused, so a role never goes quietly unapplied.
+     */
+    public Sdg withRoles(java.util.Map<String, String> roles) {
+        java.util.Set<String> found = new java.util.HashSet<>();
+        List<Layer> out = roled(layers, roles, found);
+        for (String name : roles.keySet()) {
+            if (!found.contains(name)) {
+                throw new IllegalArgumentException("no layer named " + name + " to give the role " + roles.get(name));
+            }
+        }
+        return new Sdg(width, height, pages, out);
+    }
+
+    /** {@code layers} with their roles, into groups and their masks as well; the names given one added to {@code found}. */
+    private static List<Layer> roled(List<Layer> layers, java.util.Map<String, String> roles,
+                                     java.util.Set<String> found) {
+        java.util.List<Layer> out = new java.util.ArrayList<>();
+        for (Layer l : layers) {
+            if (l.isGroup()) {
+                Group g = l.group();
+                Mask m = g.mask() == null ? null : new Mask(g.mask().kind(), roled(g.mask().layers(), roles, found));
+                out.add(Layer.group(l.name(), l.opacity(), new Group(roled(g.layers(), roles, found), g.clip(), m)));
+                continue;
+            }
+            String role = roles.get(l.name());
+            if (role == null) {
+                out.add(l);
+                continue;
+            }
+            if (!(l.paint() instanceof Paint.Solid s)) {
+                throw new IllegalArgumentException("the layer " + l.name() + " is not painted one colour, so takes no role");
+            }
+            found.add(l.name());
+            out.add(new Layer(l.name(), l.stencil(), s.as(role), l.opacity()));
+        }
+        return out;
     }
 
     /** RGBA8 texels, top row first. What each channel holds is up to the stencils and paints that point into it. */
@@ -45,11 +87,64 @@ public record Sdg(double width, double height, List<Page> pages, List<Layer> lay
      * One layer: its stencil's coverage, times its paint's alpha, times {@code opacity}, of its paint's colour, over
      * what is under it.
      */
-    public record Layer(String name, Stencil stencil, Paint paint, float opacity) {
+    public record Layer(String name, Stencil stencil, Paint paint, float opacity, Group group) {
 
-        /** Whether a reader knows how to draw it; one that does not skips it, and draws the rest. */
+        /** A shape: a stencil and a paint. */
+        public Layer(String name, Stencil stencil, Paint paint, float opacity) {
+            this(name, stencil, paint, opacity, null);
+        }
+
+        /**
+         * A group: {@code group}'s layers composited apart, then laid over what is under them once, at {@code opacity},
+         * cut by its clip and multiplied by its mask (since 1.2, {@code docs/sdg.md} §2). Its stencil is of the kind
+         * {@value Stencil#GROUP}, which a reader of 1.1 does not know, and so skips, drawing the rest.
+         */
+        public static Layer group(String name, float opacity, Group group) {
+            return new Layer(name, Stencil.GROUP_STENCIL, new Paint.Unknown(Stencil.GROUP), opacity, group);
+        }
+
+        /** Whether it is a group rather than a shape. */
+        public boolean isGroup() {
+            return group != null;
+        }
+
+        /**
+         * Whether a reader knows how to draw it as a shape; one that does not skips it, and draws the rest. A group is
+         * not a shape: a reader that draws groups asks {@link #isGroup()} first.
+         */
         public boolean known() {
-            return stencil.known() && !(paint instanceof Paint.Unknown);
+            return group == null && stencil.known() && !(paint instanceof Paint.Unknown);
+        }
+    }
+
+    /**
+     * A group's contents: its {@code layers}, back to front, shapes and groups alike; a {@code clip}, a stencil whose
+     * coverage cuts the composite, or null for none; and a {@code mask}, or null for none.
+     */
+    public record Group(List<Layer> layers, Stencil clip, Mask mask) {
+
+        /** How deep groups may nest in a drawing a reader takes: past it the drawing is refused. */
+        public static final int MAX_DEPTH = 16;
+
+        public Group {
+            layers = List.copyOf(layers);
+        }
+    }
+
+    /**
+     * A mask: {@code layers} drawn apart, the group multiplied by their {@link #LUMINANCE} (SVG's default: the Rec. 709
+     * luma of their colour, times their alpha) or their {@link #ALPHA}.
+     */
+    public record Mask(String kind, List<Layer> layers) {
+
+        public static final String LUMINANCE = "luminance", ALPHA = "alpha";
+
+        public Mask {
+            layers = List.copyOf(layers);
+        }
+
+        public boolean known() {
+            return kind.equals(LUMINANCE) || kind.equals(ALPHA);
         }
     }
 
@@ -67,6 +162,15 @@ public record Sdg(double width, double height, List<Page> pages, List<Layer> lay
                           double originY, double scale, double range) {
 
         public static final String SDF = "sdf", MSDF = "msdf";
+
+        /** The kind of a group layer's stencil: a place holder, holding nothing, that a reader of 1.1 skips. */
+        public static final String GROUP = "group";
+
+        /**
+         * A group layer's stencil: one texel of page 0, so a reader of 1.1, which checks every stencil's rectangle
+         * before it skips a kind it does not know, finds it in its page and reads the rest of the drawing.
+         */
+        public static final Stencil GROUP_STENCIL = new Stencil(GROUP, 0, 0, 0, 0, 1, 1, 0, 0, 1, 1);
 
         public boolean known() {
             return kind.equals(SDF) || kind.equals(MSDF);
