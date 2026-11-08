@@ -81,7 +81,8 @@ for the same result; where it is a lossy shortcut, the exact route sits beside i
 | SVG → MTSDF | SVG → Shape → MTSDF | LOSSY: paints | parts, `Framing` |
 | SDG → MTSDF, exact | SDG → Mask → Shape → MTSDF | LOSSY: paints | oversample, flatness, `Framing` |
 | SDG → MTSDF, fast | SDG → Mask → SDF → widen | LOSSY: paints, corners | oversample, spread |
-| SDG → Art pair | (SDG → Mask → Shape → MTSDF) beside (SDG → Raster), per size | LOSSY: paints in the field | sizes, field side, margin |
+| SDG → SDF, exact | SDG → Mask → Shape → SDF | LOSSY: paints | oversample, flatness, `Framing` |
+| SDG → Art pair | (SDG → Mask → Shape → SDF) beside (SDG → Raster), per size | LOSSY: paints in the field | sizes, field side, margin. An SDF, not the traced MTSDF: `ArtPair`'s near channels are one true distance, which `Condense` reads well off the edge |
 | SVG → Art pair | SVG → SDG → Art pair | as above | as above; replaces `ArtPair.bake(Svg, ...)` |
 | SDG → Icon | (SDG → Raster) per size → Icon | EXACT | sizes, and **a drawing per small size where there is one**: the hand-drawn 16 and 24 px marks are data the source does not hold, so they are a required list, empty when there are none |
 | Raster → MSDF | Raster → Mask → Shape → MSDF | SYNTHESISING: a threshold | channel, threshold, flatness, `Framing` |
@@ -114,7 +115,7 @@ Conversion<Field, Sdg> painted = Convert.fieldToSdg(FieldKind.SDF, 8, new Sdg.Pa
 
 // Two branches of one source, joined: the join is a hop of its own.
 Convert.sdgToArtPair(104, 0.25f, new int[]{104, 208}, "sun").name();
-// "(SDG → Mask → Shape → MTSDF) beside (SDG → Raster sizes) → Art pair"
+// "(SDG → Mask → Shape → SDF) beside (SDG → Raster sizes) → Art pair"
 ```
 
 * `Fidelity` lists what is lost and what was needed, in words; a route's is its hops' joined, so a route that loses

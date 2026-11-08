@@ -100,6 +100,8 @@ public final class Catalogue {
             add(m, "svgToMtsdf", Convert.svgToMtsdf(Inputs.starFraming(t), t, t), Inputs::starSvg, "star, " + tl);
             add(m, "sdgToMtsdf", Convert.sdgToMtsdf(t, t / 8, 8, 0.25, Set.of()), Inputs::badge,
                     "badge, " + tl + " × 8");
+            add(m, "sdgToSdf", Convert.sdgToSdf(t, t / 8, 8, 0.25, Set.of()), Inputs::badge,
+                    "badge, " + tl + " × 8");
             add(m, "sdgToMtsdfFast", Convert.sdgToMtsdfFast(t, t / 8, 8, Set.of()), Inputs::badge,
                     "badge, " + tl + " × 8");
             add(m, "rasterToMsdf", Convert.rasterToMsdf(Channel.ALPHA, 0.5f, false, 8, 0.25, t, t, t / 8),

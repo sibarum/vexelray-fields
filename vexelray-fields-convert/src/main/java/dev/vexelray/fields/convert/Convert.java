@@ -475,6 +475,17 @@ public final class Convert {
     }
 
     /**
+     * SDG → Mask → Shape → SDF, LOSSY (paints): the exact route to one true distance per texel, the traced shape's own,
+     * where {@link #sdgToMtsdf} gives three pseudo-distances. As {@link #sdgToMtsdf}, the same texels.
+     */
+    public static Conversion<Sdg, Field> sdgToSdf(int field, int spread, int oversample, double flatness,
+                                                  Set<String> without) {
+        return sdgToMask(field, field, oversample, without)
+                .then(maskToShape(flatness))
+                .then(shapeToSdf(margin(spread), field + 2 * spread, field + 2 * spread));
+    }
+
+    /**
      * SDG → Mask → SDF → MTSDF, LOSSY (paints; corners: round at magnification): the fast route, no tracing. As
      * {@link #sdgToMtsdf}, the same texels.
      */
@@ -485,10 +496,15 @@ public final class Convert {
     }
 
     /**
-     * (SDG → Mask → Shape → MTSDF) beside (SDG → Raster sizes) → Art pair: what {@code Condense} draws, from a drawing.
+     * (SDG → Mask → Shape → SDF) beside (SDG → Raster sizes) → Art pair: what {@code Condense} draws, from a drawing.
      * The field {@code field} texels square with {@code margin} of it each side, made by the exact route; the colour
      * at each of {@code sizes}; the layer named {@code lift}, if not null, left out of the field and kept in the colour,
      * its place recorded. Replaces {@code ArtPair.bake} for anything that has an SDG.
+     *
+     * <p>The field is an SDF, one true distance, never the traced shape's MTSDF: {@link ArtPair}'s near channels are
+     * one distance, and {@code Condense} reads them as that distance well off the edge (its rings, rim, cut and
+     * bevel). An MTSDF's pseudo-distances part from the true one past a corner, by up to nineteen texels on the
+     * VexelRay mark's points, and the opening drew its light there out of place.
      */
     public static Conversion<Sdg, ArtPair> sdgToArtPair(int field, float margin, int[] sizes, String lift) {
         return artPair(field, margin, sizes, lift, true);
@@ -508,7 +524,7 @@ public final class Convert {
         int spread = Math.round(margin * field);
         Set<String> without = lift == null ? Set.of() : Set.of(lift);
         Conversion<Sdg, Field> shape = exact
-                ? sdgToMtsdf(field, spread, PAIR_OVERSAMPLE, PAIR_FLATNESS, without)
+                ? sdgToSdf(field, spread, PAIR_OVERSAMPLE, PAIR_FLATNESS, without)
                 : sdgToMtsdfFast(field, spread, PAIR_OVERSAMPLE, without);
         return Conversion.beside(shape, sdgToRasterSizes(sizes, List.of()), ART_PAIR, Fidelity.EXACT,
                 (sdg, d, colours) -> ArtPair.assemble(d, field, spread, colours, lift == null ? null : lift(sdg, lift)));

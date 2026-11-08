@@ -71,7 +71,7 @@ class ConvertTest {
     @Test
     void aBranchedRouteNamesBothBranchesAndItsJoin() {
         Conversion<Sdg, ArtPair> pair = Convert.sdgToArtPair(32, 0.25f, new int[]{24}, null);
-        assertEquals("(SDG → Mask → Shape → MTSDF) beside (SDG → Raster sizes) → Art pair", pair.name());
+        assertEquals("(SDG → Mask → Shape → SDF) beside (SDG → Raster sizes) → Art pair", pair.name());
         assertEquals(5, pair.hops().size());
     }
 
@@ -282,6 +282,54 @@ class ConvertTest {
         assertEquals(0.78f, pair.lift().x(), 0.01f);
         assertEquals(0.22f, pair.lift().y(), 0.01f);
         assertEquals(0.10f, pair.lift().radius(), 0.01f);
+    }
+
+    /**
+     * Condense reads an art pair's near channels as the true distance off the edge too (rings, rim, cut, bevel). A
+     * traced MTSDF put pseudo-distances there instead, off by up to nineteen texels past the VexelRay mark's points,
+     * and the About opening drew its light out of place. On a sharp V, by both routes: the near median is the far
+     * distance wherever Condense reads it, and the field's edge is the colour's.
+     */
+    @Test
+    void anArtPairsNearChannelsAreItsTrueDistanceEvenPastSharpCorners() {
+        Sdg v = Convert.svgToSdg(128).apply(Svg.parse("""
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+                  <polygon points="5,20 30,20 50,70 70,20 95,20 50,96" fill="#3fb2c2"/>
+                </svg>"""));
+        for (ArtPair pair : List.of(Convert.sdgToArtPair(96, 0.6f, new int[]{96}, null).apply(v),
+                Convert.sdgToArtPairFast(96, 0.6f, new int[]{96}, null).apply(v))) {
+            ArtPair.Atlas a = pair.atlases().getFirst();
+            byte[] px = a.rgba();
+            float far = 2f * pair.spread(), near = far * ArtPair.NEAR;
+            int read = 0;
+            for (int y = 0; y < pair.fieldSide(); y++) {
+                for (int x = 0; x < pair.fieldSide(); x++) {
+                    int o = (y * a.width() + x) * 4;
+                    float r = (px[o] & 0xFF) / 255f, g = (px[o + 1] & 0xFF) / 255f, b = (px[o + 2] & 0xFF) / 255f;
+                    float median = Math.max(Math.min(r, g), Math.min(Math.max(r, g), b));
+                    if (Math.abs(median - 0.5f) >= 0.36f) {
+                        continue;   // where Condense hands over to alpha
+                    }
+                    read++;
+                    float dNear = (median - 0.5f) * near, dFar = ((px[o + 3] & 0xFF) / 255f - 0.5f) * far;
+                    assertEquals(dFar, dNear, 1f, "near and far distances part at texel " + x + ", " + y);
+                }
+            }
+            assertTrue(read > 1000, "a band round the edge is read by the median: " + read);
+
+            int s = a.size(), disagree = 0, inside = 0;
+            for (int y = 0; y < s; y++) {
+                for (int x = 0; x < s; x++) {
+                    int fx = (int) (pair.spread() + (x + 0.5) / s * pair.field());
+                    int fy = (int) (pair.spread() + (y + 0.5) / s * pair.field());
+                    boolean field = (px[(fy * a.width() + fx) * 4 + 3] & 0xFF) >= 128;
+                    boolean colour = (px[((a.colourY() + y) * a.width() + a.colourX() + x) * 4 + 3] & 0xFF) >= 128;
+                    inside += colour ? 1 : 0;
+                    disagree += field != colour ? 1 : 0;
+                }
+            }
+            assertTrue(disagree < inside / 20, "the field's edge is not the colour's: " + disagree + " of " + inside);
+        }
     }
 
     // ------------------------------------------------------------------ icons
