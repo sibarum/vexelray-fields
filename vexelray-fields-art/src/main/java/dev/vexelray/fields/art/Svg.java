@@ -246,6 +246,18 @@ public final class Svg {
         return everyEdgeBounds(shape) ? Optional.of(shape) : Optional.empty();
     }
 
+    /**
+     * Every fill and stroke the drawing paints, in the order it paints them, in the view box's units with y down: what
+     * a drawing kept as layers is made of. Groups, {@code use} and transforms are followed. A group's opacity, mask or
+     * clip blends what is under it with more than one part at once, which separate layers cannot; such a drawing is
+     * refused, and is drawn with {@link #render} and kept as a picture instead.
+     */
+    public List<SvgPart> parts() {
+        List<SvgPart> parts = new ArrayList<>();
+        new Parter(parts).children(root, Affine.IDENTITY, Style.initial().with(root, this));
+        return parts;
+    }
+
     /** Whether every edge of {@code shape}, all along it, has the fill on exactly one side. */
     private static boolean everyEdgeBounds(Shape shape) {
         Bounds b = shape.bounds();
@@ -626,6 +638,108 @@ public final class Svg {
             s = s.with(el, this);
         }
         return s;
+    }
+
+    // ---------------------------------------------------------------------------------------------------- parts
+
+    /** Lists a drawing's paints one by one, for {@link #parts}. */
+    private final class Parter {
+
+        private final List<SvgPart> parts;
+        private int depth;
+
+        Parter(List<SvgPart> parts) {
+            this.parts = parts;
+        }
+
+        void children(Element parent, Affine ctm, Style style) {
+            for (Element c : Svg.children(parent)) {
+                element(c, ctm, style);
+            }
+        }
+
+        void element(Element e, Affine ctm, Style inherited) {
+            refuse(e);
+            String n = name(e);
+            if (QUIET.contains(n) || "none".equals(Style.property(e, "display"))) {
+                return;
+            }
+            if (!n.equals("g") && !n.equals("a") && !n.equals("use") && !SHAPES.contains(n)) {
+                throw new IllegalArgumentException("<" + n + "> is not drawn here");
+            }
+            if (++depth > 64) {
+                throw new IllegalArgumentException("the drawing refers to itself, or nests past 64 deep");
+            }
+            try {
+                String mask = Style.property(e, "mask"), clip = Style.property(e, "clip-path");
+                Style style = inherited.with(e, Svg.this);
+                if ((mask != null && !mask.equals("none")) || (clip != null && !clip.equals("none"))) {
+                    throw new IllegalArgumentException("<" + n + "> is masked or clipped, which layers cannot keep;"
+                            + " render the drawing and trace the picture instead");
+                }
+                if (style.opacity < 1 && !SHAPES.contains(n)) {
+                    throw new IllegalArgumentException("<" + n + "> has a group opacity, which layers cannot keep;"
+                            + " render the drawing and trace the picture instead");
+                }
+                Affine m = ctm.times(own(e));
+                if (n.equals("use")) {
+                    element(used(e), m, style);
+                } else if (!SHAPES.contains(n)) {
+                    children(e, m, style);
+                } else {
+                    shape(e, m, style);
+                }
+            } finally {
+                depth--;
+            }
+        }
+
+        private void shape(Element e, Affine m, Style style) {
+            Path path = geometry(e);
+            if (path == null || !style.visible) {
+                return;
+            }
+            Path units = path.mapped(m::apply);
+            Bounds box = path.bounds();
+            // a shape's own opacity covers its fill and stroke together; kept per part, which is exact unless both
+            // are painted and overlap
+            if (style.fill != null && !name(e).equals("line")) {
+                add(units, false, style, style.fill, box, m, style.fillOpacity * style.opacity);
+            }
+            if (style.stroke != null && style.strokeWidth > 0) {
+                add(units, true, style, style.stroke, box, m, style.strokeOpacity * style.opacity);
+            }
+        }
+
+        private void add(Path units, boolean stroke, Style style, Style.Paint paint, Bounds box, Affine m,
+                         float opacity) {
+            Gradient.Shader shader;
+            float[] solid = null;
+            if (paint.gradient() == null) {
+                float[] c = paint.rgb();
+                solid = c.clone();
+                shader = (x, y, out) -> {
+                    out[0] = c[0];
+                    out[1] = c[1];
+                    out[2] = c[2];
+                    out[3] = 1;
+                };
+            } else {
+                shader = paint.gradient().shader(box, m, viewBox);
+                if (shader == null) {
+                    return;
+                }
+            }
+            double k = m.scale();
+            double[] dashes = style.dashes == null ? null : style.dashes.clone();
+            if (dashes != null) {
+                for (int i = 0; i < dashes.length; i++) {
+                    dashes[i] *= k;
+                }
+            }
+            parts.add(new SvgPart(units, stroke, style.evenOdd, style.strokeWidth * k, style.cap, style.join,
+                    style.miterLimit, dashes, style.dashOffset * k, shader, solid, opacity));
+        }
     }
 
     // ---------------------------------------------------------------------------------------------------- outline

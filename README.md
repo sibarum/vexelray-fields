@@ -24,6 +24,9 @@ vexelray-fields-art     art made into any of the three: an SVG (drawn here, in J
                         channel of a raster, such as its transparency. ArtField is the front door.
 vexelray-fields-atlas   fields assembled into textures: GridAtlas (cells on grids, as the icon sets), ArtPair (a mark's
                         field beside its colour) and AtlasPixels (the deflated file vexelray-text's AtlasPixels reads).
+vexelray-fields-sdg     SDG, signed distance graphics: art as painted layers, each a distance field and a paint, sharp
+                        at any size. The .sdg file (docs/sdg.md), a CPU reference renderer, and encoders from an SVG
+                        and from a raster.
 vexelray-fields-vexel   experimental. Vexel fields: collision rate, granularity and materials per cell, filtered by
                         combining moments, and collided with by hashed rays that hold still frame to frame.
 vexelray-fields-fractal experimental. Fractals on a rational grid of boxes (modulus rules, small textures, hashed
@@ -236,6 +239,68 @@ gives its `icons.rgba` byte for byte. The framework's logo pair: the same descri
 within 0.24 on average (antialiasing at edges differs).
 
 Not here: the font atlases, which msdf-atlas-gen packs, and the plugin's build-side work (stamps, generated sources).
+
+### SDG: signed distance graphics
+
+A distance field is one shape. Art is many, in colour: an SDF of an icon's alpha draws its silhouette and nothing
+inside it, and the colour beside it (`ArtPair`) blurs when it is magnified. SDG keeps art as SVG keeps it, in layers
+painted back to front, but each layer's shape is a distance field: a **stencil** (SDF, or MSDF for sharp corners) for
+where it is, and a **paint** (one colour, or a colour texture read smoothly) for what colour it is there. Edges come
+from the fields and stay sharp at any size; colour comes from the paints. The format, how a reader must draw it and a
+shader that does are in [`docs/sdg.md`](docs/sdg.md).
+
+```java
+Svg svg = Svg.read(Path.of("badge.svg"));
+Sdg badge = Sdg.of(svg, SvgToSdg.Options.across(svg, 64));                                // a layer per fill, stroke
+Sdg photo = Sdg.trace(Raster.read(Path.of("sprite.png")), Trace.Options.DEFAULT);       // a layer per colour region
+SdgFile.write(photo, Path.of("sprite.sdg"));
+Raster big = SdgRender.render(photo, 1024, 1024);                                        // as a shader draws it
+```
+
+* **From an SVG**, one layer per fill and stroke. A nonzero fill's outline is read exactly and made an MSDF; a stroke
+  or even-odd fill is a fine mask made an SDF. A gradient is baked into a texture. A group's opacity, mask or clip is
+  refused, since it composites several parts at once.
+* **From a raster**, traced: colours clustered into regions (k-means, seeded the same every time); each antialiased
+  pixel read as a blend of the two regions round it, which puts an edge within a fraction of a pixel; regions cut on a
+  fine grid as they stack, and each reaching two texels beneath the regions over it, so no seam opens where two meet;
+  a region's paint its mean colour, or its own pixels as a texture if it varies (a gradient, shading), carried past its
+  edge so the edge never reads a neighbour's colour.
+* **The file** is a PNG-style signature and tagged chunks: a header, pages of RGBA8 (deflated), a chunk per layer.
+  Kinds are names, and stencil and paint are each a block with its own length, so a reader skips a chunk, a field or a
+  layer it does not know and draws the rest (`whatAReaderDoesNotKnowIsSkipped`).
+
+**Measured.** A 100-unit badge (a gradient sky, flat fills, a star, a stroke, rounded corners) drawn at 64 px and
+magnified eight times, to 512, against the SVG drawn at 512. Mean absolute error per channel, of 255, over white: over
+every pixel, over the pixels at an edge of the truth, and over the rest.
+
+| at 8×                               |  all | edges | flat | layers | file    |
+|-------------------------------------|-----:|------:|-----:|-------:|--------:|
+| the 64 px picture, bilinear         | 5.72 | 35.97 | 4.38 |        | 1.9 kB (PNG) |
+| traced, 8 colours                   | 1.30 | 22.51 | 0.35 |      7 | 10.0 kB |
+| traced, 8 colours, 2 texels a pixel | 1.21 | 21.43 | 0.31 |      7 | 18.0 kB |
+| traced, 4 colours                   | 1.99 | 30.67 | 0.72 |      4 |  6.2 kB |
+| traced, 16 colours                  | 2.69 | 31.29 | 1.42 |     14 | 12.6 kB |
+| from the SVG, 64 texels across      | 0.27 |  4.27 | 0.09 |      5 |  5.8 kB |
+
+![the 64 px picture, bilinear, traced, from the SVG, and the truth](docs/sdg-magnified.png)
+
+*Left to right: the 64 px picture, bilinear, traced (8 colours), from the SVG, the truth; a crop at 8×.*
+
+What it shows:
+
+* **Traced, the error is a quarter of bilinear's**, and within shapes a twelfth; at edges two thirds. The edges are
+  sharp where bilinear's are eight pixels of blur. The file is five times the PNG's.
+* **From the SVG it is within 0.3 of the truth**, the edges within 4.3: the MSDFs keep the corners. The file is three
+  times the 64 px PNG, and draws as the SVG does at any size.
+* **More colours is not better.** Sixteen does worse than eight at edges and within shapes alike: twice the layers,
+  each extra region another piece of fill or gradient with edges of its own. Four is too few for this drawing.
+* **A feature thinner than half a pixel is lost.** The star's tips at 64 px are a sliver of a pixel; tracing reads
+  shares of pixels, cut at one half, so they round off or go (the third panel). Bilinear blurs them, but keeps them.
+  Two texels a pixel hardly helps: the information is not in the raster. Fitting curves and corners to the regions,
+  then MSDFs from those, is what would sharpen them.
+
+Not yet: analytic gradient paints, MTSDF stencils for effects, groups (so every SVG converts), a GPU drawing beside the
+CPU one, and SDG as an item of `vexelray-codec-asset`'s `.vxa`.
 
 ### Vexel fields (experimental)
 
