@@ -18,7 +18,7 @@ import java.util.zip.Inflater;
  * bytes are taken as they are stored: gamma, colour profiles and the like are not applied, half of a page being
  * distances.
  */
-final class Png {
+public final class Png {
 
     private static final byte[] SIGNATURE = {(byte) 0x89, 'P', 'N', 'G', '\r', '\n', 0x1A, '\n'};
 
@@ -26,6 +26,14 @@ final class Png {
     private static final long MAX_BYTES = Integer.MAX_VALUE - 64;
 
     private Png() {
+    }
+
+    /**
+     * {@code width × height} straight RGBA8, top row first, as one PNG: what an {@code .ico} holds per size and what
+     * any writer of pixels can take without {@code java.desktop}.
+     */
+    public static byte[] write(int width, int height, byte[] rgba) {
+        return encode(new Sdg.Page(width, height, rgba));
     }
 
     static byte[] encode(Sdg.Page page) {

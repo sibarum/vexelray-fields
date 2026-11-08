@@ -647,6 +647,7 @@ public final class Svg {
 
         private final List<SvgPart> parts;
         private int depth;
+        private String owner;   // the outermost id on the way down, or null
 
         Parter(List<SvgPart> parts) {
             this.parts = parts;
@@ -670,6 +671,10 @@ public final class Svg {
             if (++depth > 64) {
                 throw new IllegalArgumentException("the drawing refers to itself, or nests past 64 deep");
             }
+            String was = owner;
+            if (owner == null && !e.getAttribute("id").isEmpty()) {
+                owner = e.getAttribute("id");
+            }
             try {
                 String mask = Style.property(e, "mask"), clip = Style.property(e, "clip-path");
                 Style style = inherited.with(e, Svg.this);
@@ -690,6 +695,7 @@ public final class Svg {
                     shape(e, m, style);
                 }
             } finally {
+                owner = was;
                 depth--;
             }
         }
@@ -738,7 +744,7 @@ public final class Svg {
                 }
             }
             parts.add(new SvgPart(units, stroke, style.evenOdd, style.strokeWidth * k, style.cap, style.join,
-                    style.miterLimit, dashes, style.dashOffset * k, shader, solid, opacity));
+                    style.miterLimit, dashes, style.dashOffset * k, shader, solid, opacity, owner));
         }
     }
 

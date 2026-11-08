@@ -25,10 +25,12 @@ public final class SvgPart {
     private final Gradient.Shader shader;
     private final float[] solid;      // straight rgb, or null for a gradient
     private final float opacity;
+    private final String id;          // the outermost id it is drawn under, or null
 
     SvgPart(Path path, boolean stroke, boolean evenOdd, double strokeWidth, Stroker.Cap cap, Stroker.Join join,
             double miterLimit, double[] dashes, double dashOffset, Gradient.Shader shader, float[] solid,
-            float opacity) {
+            float opacity, String id) {
+        this.id = id;
         this.path = path;
         this.stroke = stroke;
         this.evenOdd = evenOdd;
@@ -41,6 +43,14 @@ public final class SvgPart {
         this.shader = shader;
         this.solid = solid;
         this.opacity = opacity;
+    }
+
+    /**
+     * The id of the outermost element it is drawn under that has one (itself, its group, a group of that), as
+     * {@link Svg#only} and {@link Svg#without} name a part; empty if none has.
+     */
+    public Optional<String> id() {
+        return Optional.ofNullable(id);
     }
 
     /** Whether this is a stroke rather than a fill. */

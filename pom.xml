@@ -42,6 +42,11 @@
              colour, so a drawing stays sharp-edged at any size. A CPU reference renderer, and encoders
              from an SVG (by its parts) and from a raster (traced into colour regions). -->
         <module>vexelray-fields-sdg</module>
+        <!-- Every kind of field into every kind an effect wants, each conversion naming its hops and what it keeps,
+             loses or needs (docs/conversions.md). -->
+        <module>vexelray-fields-convert</module>
+        <!-- Every conversion timed and its allocation measured by JMH, and docs/benchmarks.md written from the run. -->
+        <module>vexelray-fields-bench</module>
         <!-- Experimental. Vexel fields: per cell, a collision rate per distance, a granularity (smoke to surface) and
              the chance of each material, derived from moments that average where distances do not. -->
         <module>vexelray-fields-vexel</module>
@@ -105,6 +110,11 @@
             <dependency>
                 <groupId>dev.vexelray.fields</groupId>
                 <artifactId>vexelray-fields-sdg</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>dev.vexelray.fields</groupId>
+                <artifactId>vexelray-fields-convert</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>

@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>dev.vexelray.fields</groupId>
+        <artifactId>vexelray-fields</artifactId>
+        <version>0.2.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>vexelray-fields-convert</artifactId>
+    <packaging>jar</packaging>
+
+    <name>vexelray-fields-convert</name>
+    <description>
+        Every kind of field into every kind an effect wants (docs/conversions.md): each conversion a value that names
+        its hops and says what it keeps, loses or needs, a route only ever a composition of its hops. Benchmarked in
+        vexelray-fields-bench, published in docs/benchmarks.md.
+    </description>
+
+    <dependencies>
+        <dependency>
+            <groupId>dev.vexelray.fields</groupId>
+            <artifactId>vexelray-fields-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>dev.vexelray.fields</groupId>
+            <artifactId>vexelray-fields-sdf</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>dev.vexelray.fields</groupId>
+            <artifactId>vexelray-fields-msdf</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>dev.vexelray.fields</groupId>
+            <artifactId>vexelray-fields-art</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>dev.vexelray.fields</groupId>
+            <artifactId>vexelray-fields-atlas</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>dev.vexelray.fields</groupId>
+            <artifactId>vexelray-fields-sdg-format</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>dev.vexelray.fields</groupId>
+            <artifactId>vexelray-fields-sdg</artifactId>
+        </dependency>
+    </dependencies>
+</project>

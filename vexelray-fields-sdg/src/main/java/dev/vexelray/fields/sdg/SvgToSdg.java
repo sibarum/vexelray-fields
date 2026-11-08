@@ -76,7 +76,7 @@ public final class SvgToSdg {
                 field = MaskSdf.of(mask, w * OVERSAMPLE, h * OVERSAMPLE, OVERSAMPLE, 0);
             }
             Assembly.Stencil stencil = new Assembly.Stencil(field, x0 / s, y0 / s, s, 2.0 * o.spread());
-            String name = (part.stroke() ? "stroke " : "fill ") + n;
+            String name = part.id().orElse((part.stroke() ? "stroke " : "fill ") + n);
             var solid = part.solid();
             if (solid.isPresent()) {
                 float[] c = solid.get();

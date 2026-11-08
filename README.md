@@ -30,6 +30,10 @@ vexelray-fields-sdg-format
                         and nothing else, so the stack's readers take it and none of the encoders.
 vexelray-fields-sdg     SDG, signed distance graphics: art as painted layers, each a distance field and a paint, sharp
                         at any size. A CPU reference renderer, and encoders from an SVG and from a raster.
+vexelray-fields-convert every kind of field into every kind an effect wants (docs/conversions.md): each conversion a
+                        value naming its hops and what it keeps, loses or needs; a route only ever a composition.
+vexelray-fields-bench   every conversion timed and its allocation measured by JMH; docs/benchmarks.md is written
+                        from the run. Not shipped.
 vexelray-fields-vexel   experimental. Vexel fields: collision rate, granularity and materials per cell, filtered by
                         combining moments, and collided with by hashed rays that hold still frame to frame.
 vexelray-fields-fractal experimental. Fractals on a rational grid of boxes (modulus rules, small textures, hashed

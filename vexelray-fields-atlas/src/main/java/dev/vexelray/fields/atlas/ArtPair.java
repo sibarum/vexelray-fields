@@ -88,22 +88,45 @@ public record ArtPair(int field, int spread, List<Atlas> atlases, Lift lift) {
         }
 
         Field d = ArtField.of(shape, Channel.ALPHA, false, FieldKind.SDF, field, field, spread);
+        List<Raster> colours = new ArrayList<>();
+        for (int size : sizes) {
+            colours.add(svg.render(size, size, SAMPLES));
+        }
+        return assemble(d, field, spread, colours, lifted);
+    }
+
+    /**
+     * A pair from its parts, however they were made: {@code d}, the field, {@code field} texels square with
+     * {@code spread} each side (so {@code field + 2 · spread} across), its distances in texels; and the colour at each
+     * size, straight RGBA, each square. An SDF's one distance goes in all four channels, at the near range in red,
+     * green and blue and the far in alpha; an MTSDF's three pseudo-distances go in red, green and blue at the near range
+     * and its true distance in alpha at the far, so its corners stay sharp where the near channels are read.
+     */
+    public static ArtPair assemble(Field d, int field, int spread, List<Raster> colours, Lift lift) {
         int fside = field + 2 * spread;
+        if (d.width() != fside || d.height() != fside || d.kind() == FieldKind.MSDF || colours.isEmpty()) {
+            throw new IllegalArgumentException("a pair of a " + d.kind().key + " " + d.width() + " × " + d.height()
+                    + " for a " + fside + " cell, with " + colours.size() + " colours");
+        }
         byte[] cell = new byte[fside * fside * 4];
         float far = 2f * Math.max(1, spread);
         float near = far * NEAR;
         float[] data = d.data();
-        for (int i = 0; i < data.length; i++) {
-            byte n = unit(0.5f + data[i] / near);
-            cell[i * 4] = n;
-            cell[i * 4 + 1] = n;
-            cell[i * 4 + 2] = n;
-            cell[i * 4 + 3] = unit(0.5f + data[i] / far);
+        int ch = d.channels();
+        for (int i = 0; i < fside * fside; i++) {
+            for (int c = 0; c < 3; c++) {
+                cell[i * 4 + c] = unit(0.5f + data[i * ch + (ch == 1 ? 0 : c)] / near);
+            }
+            cell[i * 4 + 3] = unit(0.5f + data[i * ch + (ch == 1 ? 0 : 3)] / far);
         }
 
         List<Atlas> atlases = new ArrayList<>();
-        for (int size : sizes) {
-            byte[] colour = premultiplied(svg.render(size, size, SAMPLES).rgba());
+        for (Raster r : colours) {
+            int size = r.width();
+            if (r.height() != size) {
+                throw new IllegalArgumentException("a colour " + r.width() + " × " + r.height() + ", not square");
+            }
+            byte[] colour = premultiplied(r.rgba());
             int cx = fside + GUTTER + 1;
             int cy = 1;
             int w = cx + size + 1;
@@ -117,7 +140,7 @@ public record ArtPair(int field, int spread, List<Atlas> atlases, Lift lift) {
             }
             atlases.add(new Atlas(size, w, h, cx, cy, rgba));
         }
-        return new ArtPair(field, spread, atlases, lifted);
+        return new ArtPair(field, spread, atlases, lift);
     }
 
     /**

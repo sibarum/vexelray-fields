@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>dev.vexelray.fields</groupId>
+        <artifactId>vexelray-fields</artifactId>
+        <version>0.2.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>vexelray-fields-bench</artifactId>
+    <packaging>jar</packaging>
+
+    <name>vexelray-fields-bench</name>
+    <description>
+        Every conversion in vexelray-fields-convert timed, and its allocation measured, on fixed inputs, by JMH; and
+        docs/benchmarks.md written from the run. Not shipped, not a native image, and nothing depends on it, so JMH's
+        generated code and reflection are fine here. Run it:
+
+            mvn -pl vexelray-fields-bench -am install -DskipTests
+            mvn -pl vexelray-fields-bench exec:exec
+    </description>
+
+    <properties>
+        <jmh.version>1.37</jmh.version>
+        <!-- not deployed anywhere -->
+        <maven.deploy.skip>true</maven.deploy.skip>
+        <!-- where the results go, and a substring of case keys to run only those: -Dbench.only=svgToShape -->
+        <bench.out>${project.basedir}/../docs/benchmarks.md</bench.out>
+        <bench.only></bench.only>
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>dev.vexelray.fields</groupId>
+            <artifactId>vexelray-fields-convert</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.openjdk.jmh</groupId>
+            <artifactId>jmh-core</artifactId>
+            <version>${jmh.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.openjdk.jmh</groupId>
+            <artifactId>jmh-generator-annprocess</artifactId>
+            <version>${jmh.version}</version>
+            <scope>provided</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <configuration>
+                    <!-- JDK 23 and later run no processor found on the class path unless asked -->
+                    <annotationProcessorPaths>
+                        <path>
+                            <groupId>org.openjdk.jmh</groupId>
+                            <artifactId>jmh-generator-annprocess</artifactId>
+                            <version>${jmh.version}</version>
+                        </path>
+                    </annotationProcessorPaths>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>exec-maven-plugin</artifactId>
+                <version>3.5.0</version>
+                <configuration>
+                    <executable>${java.home}/bin/java</executable>
+                    <!-- exec:exec, not exec:java: JMH forks JVMs with this JVM's class path -->
+                    <commandlineArgs>-classpath %classpath dev.vexelray.fields.bench.Publish ${bench.out} ${bench.only}</commandlineArgs>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+</project>
