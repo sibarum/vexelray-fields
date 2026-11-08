@@ -45,7 +45,7 @@ class SdgTest {
 
     @Test
     void aFileReadsBackAsItWasWritten() {
-        Sdg sdg = Sdg.trace(Svg.parse(BADGE).render(SMALL, SMALL, 4), Trace.Options.DEFAULT);
+        Sdg sdg = Trace.trace(Svg.parse(BADGE).render(SMALL, SMALL, 4), Trace.Options.DEFAULT);
         Sdg back = SdgFile.read(SdgFile.bytes(sdg));
         assertEquals(sdg.width(), back.width());
         assertEquals(sdg.height(), back.height());
@@ -59,7 +59,7 @@ class SdgTest {
 
     @Test
     void whatAReaderDoesNotKnowIsSkipped() {
-        Sdg sdg = Sdg.of(Svg.parse(BADGE), SvgToSdg.Options.across(Svg.parse(BADGE), 64));
+        Sdg sdg = SvgToSdg.convert(Svg.parse(BADGE), SvgToSdg.Options.across(Svg.parse(BADGE), 64));
         byte[] file = SdgFile.bytes(sdg);
 
         // a chunk of a tag never heard of, just before the end
@@ -93,7 +93,7 @@ class SdgTest {
     @Test
     void anSvgKeptAsLayersDrawsAsTheSvgDoes() {
         Svg svg = Svg.parse(BADGE);
-        Sdg sdg = Sdg.of(svg, SvgToSdg.Options.across(svg, SMALL));
+        Sdg sdg = SvgToSdg.convert(svg, SvgToSdg.Options.across(svg, SMALL));
         assertEquals(5, sdg.layers().size());   // the frame, the sun, the hills, the path's stroke, the star
         assertTrue(sdg.layers().stream().anyMatch(l -> l.paint() instanceof Sdg.Paint.Sampled), "the gradient");
         assertTrue(sdg.layers().stream().anyMatch(l -> l.stencil().kind().equals(Sdg.Stencil.MSDF)), "fills");
@@ -109,7 +109,7 @@ class SdgTest {
                 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10">
                   <g opacity="0.5"><rect width="6" height="6"/><rect x="3" y="3" width="6" height="6"/></g>
                 </svg>""");
-        assertThrows(IllegalArgumentException.class, () -> Sdg.of(svg, new SvgToSdg.Options(4, 4)));
+        assertThrows(IllegalArgumentException.class, () -> SvgToSdg.convert(svg, new SvgToSdg.Options(4, 4)));
     }
 
     /**
@@ -122,7 +122,7 @@ class SdgTest {
         Raster small = svg.render(SMALL, SMALL, 4);
         Raster truth = svg.render(LARGE, LARGE, 4);
 
-        Sdg traced = Sdg.trace(small, Trace.Options.DEFAULT);
+        Sdg traced = Trace.trace(small, Trace.Options.DEFAULT);
         Raster fromTrace = SdgRender.render(traced, LARGE, LARGE);
         Raster bilinear = bilinear(small, LARGE, LARGE);
 
@@ -160,11 +160,11 @@ class SdgTest {
 
         Object[][] rows = {
                 {"bilinear, the 64 px picture", bilinear(small, LARGE, LARGE), small.rgba().length},
-                {"traced, 8 colours", Sdg.trace(small, Trace.Options.DEFAULT), 0},
-                {"traced, 8 colours, 2 texels a pixel", Sdg.trace(small, Trace.Options.DEFAULT.withTexels(2)), 0},
-                {"traced, 4 colours", Sdg.trace(small, Trace.Options.DEFAULT.withColours(4)), 0},
-                {"traced, 16 colours", Sdg.trace(small, Trace.Options.DEFAULT.withColours(16)), 0},
-                {"from the SVG, 64 texels", Sdg.of(svg, SvgToSdg.Options.across(svg, SMALL)), 0},
+                {"traced, 8 colours", Trace.trace(small, Trace.Options.DEFAULT), 0},
+                {"traced, 8 colours, 2 texels a pixel", Trace.trace(small, Trace.Options.DEFAULT.withTexels(2)), 0},
+                {"traced, 4 colours", Trace.trace(small, Trace.Options.DEFAULT.withColours(4)), 0},
+                {"traced, 16 colours", Trace.trace(small, Trace.Options.DEFAULT.withColours(16)), 0},
+                {"from the SVG, 64 texels", SvgToSdg.convert(svg, SvgToSdg.Options.across(svg, SMALL)), 0},
         };
         System.out.printf(Locale.ROOT, "%-40s %8s %8s %8s %7s %9s%n", "at 8x", "all", "edges", "flat", "layers",
                 "file");

@@ -46,7 +46,7 @@ public final class SvgToSdg {
     private SvgToSdg() {
     }
 
-    static Sdg convert(Svg svg, Options o) {
+    public static Sdg convert(Svg svg, Options o) {
         Bounds vb = svg.viewBox();
         List<SvgPart> parts = svg.parts();
         Assembly a = new Assembly(vb.width(), vb.height());

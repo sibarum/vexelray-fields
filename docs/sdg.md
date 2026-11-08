@@ -1,12 +1,13 @@
 # SDG: signed distance graphics
 
-**Version 1.0, draft.** What SVG is to paths, SDG is to distance fields: a drawing in layers, each layer a shape and
+**Version 1.1, draft.** What SVG is to paths, SDG is to distance fields: a drawing in layers, each layer a shape and
 a colour, that stays sharp at any size. The difference is what a layer's shape is. In SVG it is an outline, to be
 filled at draw time. In SDG it is a distance field, sampled once per pixel by a shader with no tessellation and no
 path rasteriser, as the stack already draws its icons and glyphs.
 
-The reference implementation is `vexelray-fields-sdg`: `SdgFile` reads and writes the file, `SdgRender` draws it as
-this document says a reader must, and `Sdg.of(Svg, …)` and `Sdg.trace(Raster, …)` make one.
+The reference implementation is two modules: `vexelray-fields-sdg-format` holds the file (`Sdg`, and `SdgFile` to read
+and write it) and depends on nothing; `vexelray-fields-sdg` holds `SdgRender`, which draws it as this document says a
+reader must, and `SvgToSdg.convert` and `Trace.trace`, which make one.
 
 ## 1. Model
 
@@ -69,12 +70,19 @@ magnification and at minification as long as `upp ≤ range / scale` (a pixel no
 
 | kind | colour at `p` |
 |---|---|
-| `solid` | one straight RGBA8 colour |
+| `solid` | one straight RGBA8 colour; or, if it names a **role** the reader's theme has a colour for, that colour |
 | `sampled` | a rectangle of straight RGBA8 texels, mapped onto the canvas by its own origin and scale, read as a stencil is (clamped half a texel in, bilinear) |
 
 A sampled paint's colours **run on past the layer's edge**: an encoder fills the texels outside the shape from the
 colours inside it, so a read near the edge never takes in a colour from beyond it. Its texels need be no denser than the
 colour varies; edges are the stencil's business.
+
+**Roles** (since 1.1) let one drawing follow a light and a dark theme. A solid paint may name a colour of the
+reader's theme, such as `foreground`, `accent` or `muted`, and stores the colour it was authored in beside the name.
+A reader whose theme has a colour of that name draws that colour, with the stored alpha. A reader without one, or with
+no theme, draws the stored colour. That covers every reader older than 1.1 too, which never reads the name. Which
+names a theme has is the reader's business, not this format's. A paint with no role, or with an empty name, is drawn
+as stored in every theme.
 
 ## 4. File
 
@@ -97,7 +105,8 @@ chunk*      tag (4 ASCII bytes), length (u32), that many bytes
 **Stencil block:** `str` kind, `u16` page, `u8` channel, `u16` x, `u16` y, `u16` width, `u16` height, `f64` originX,
 `f64` originY, `f64` scale, `f32` range.
 
-**Paint block:** `str` kind, then by kind. `solid`: `u32` colour, `0xRRGGBBAA`. `sampled`: `u16` page, `u16` x,
+**Paint block:** `str` kind, then by kind. `solid`: `u32` colour, `0xRRGGBBAA`, then (since 1.1) `str` role, empty
+for none; a block that ends at the colour has no role. `sampled`: `u16` page, `u16` x,
 `u16` y, `u16` width, `u16` height, `f64` originX, `f64` originY, `f64` scale.
 
 ### Compatibility

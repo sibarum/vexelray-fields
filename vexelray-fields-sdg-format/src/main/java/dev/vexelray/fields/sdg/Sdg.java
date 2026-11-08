@@ -1,8 +1,5 @@
 package dev.vexelray.fields.sdg;
 
-import dev.vexelray.fields.art.Raster;
-import dev.vexelray.fields.art.Svg;
-
 import java.util.List;
 
 /**
@@ -11,8 +8,9 @@ import java.util.List;
  * what colour it is there. The edge comes from the field and stays sharp at any size; the colour comes from the paint,
  * which is one colour or a texture smooth enough to magnify. All texels are in {@link #pages}, RGBA8.
  *
- * <p>The format is in {@code docs/sdg.md}; {@link SdgFile} reads and writes it, {@link SdgRender} draws it on the CPU
- * as a shader does, and {@link #of(Svg, SvgToSdg.Options)} and {@link #trace(Raster, Trace.Options)} make one.
+ * <p>The format is in {@code docs/sdg.md}; {@link SdgFile} reads and writes it. This module holds the file alone and
+ * depends on nothing. In {@code vexelray-fields-sdg}, {@code SdgRender} draws it on the CPU as a shader does, and
+ * {@code SvgToSdg.convert} and {@code Trace.trace} make one.
  *
  * @param width  the canvas across, in units
  * @param height the canvas down, in units; y runs down
@@ -22,7 +20,7 @@ import java.util.List;
 public record Sdg(double width, double height, List<Page> pages, List<Layer> layers) {
 
     /** What the stack reads today: the major version a reader must know, and the minor it was written at. */
-    public static final int MAJOR = 1, MINOR = 0;
+    public static final int MAJOR = 1, MINOR = 1;
 
     public Sdg {
         if (!(width > 0) || !(height > 0)) {
@@ -30,16 +28,6 @@ public record Sdg(double width, double height, List<Page> pages, List<Layer> lay
         }
         pages = List.copyOf(pages);
         layers = List.copyOf(layers);
-    }
-
-    /** {@code svg} kept as layers, one per fill and stroke. */
-    public static Sdg of(Svg svg, SvgToSdg.Options options) {
-        return SvgToSdg.convert(svg, options);
-    }
-
-    /** {@code raster} traced into regions of colour, one layer each. */
-    public static Sdg trace(Raster raster, Trace.Options options) {
-        return Trace.trace(raster, options);
     }
 
     /** RGBA8 texels, top row first. What each channel holds is up to the stencils and paints that point into it. */
@@ -88,11 +76,32 @@ public record Sdg(double width, double height, List<Page> pages, List<Layer> lay
     /** What colour a layer is where it covers. */
     public sealed interface Paint {
 
-        /** One colour, straight (not premultiplied) RGBA8 as {@code 0xRRGGBBAA}. */
-        record Solid(int rgba) implements Paint {
+        /**
+         * One colour, straight (not premultiplied) RGBA8 as {@code 0xRRGGBBAA}, and optionally a {@code role}: the name
+         * of a colour of the reader's theme ({@code "foreground"}, {@code "accent"}, ...) to draw instead, so one
+         * drawing follows a light and a dark theme. A reader with no colour of that name, or none at all, draws
+         * {@code rgba}. Empty for none. Since 1.1.
+         */
+        record Solid(int rgba, String role) implements Paint {
+
+            public Solid {
+                if (role == null) {
+                    role = "";
+                }
+            }
+
+            /** A colour with no role: drawn as it is, in every theme. */
+            public Solid(int rgba) {
+                this(rgba, "");
+            }
 
             public static Solid of(float r, float g, float b, float a) {
                 return new Solid(byte8(r) << 24 | byte8(g) << 16 | byte8(b) << 8 | byte8(a));
+            }
+
+            /** This colour, drawn as the theme's {@code role} by a reader that has one. */
+            public Solid as(String role) {
+                return new Solid(rgba, role);
             }
 
             private static int byte8(float v) {

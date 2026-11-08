@@ -24,9 +24,11 @@ vexelray-fields-art     art made into any of the three: an SVG (drawn here, in J
                         channel of a raster, such as its transparency. ArtField is the front door.
 vexelray-fields-atlas   fields assembled into textures: GridAtlas (cells on grids, as the icon sets), ArtPair (a mark's
                         field beside its colour) and AtlasPixels (the deflated file vexelray-text's AtlasPixels reads).
+vexelray-fields-sdg-format
+                        the .sdg file alone (docs/sdg.md): Sdg, the drawing as records, and SdgFile. Depends on
+                        nothing, so the stack's readers take it and none of the encoders.
 vexelray-fields-sdg     SDG, signed distance graphics: art as painted layers, each a distance field and a paint, sharp
-                        at any size. The .sdg file (docs/sdg.md), a CPU reference renderer, and encoders from an SVG
-                        and from a raster.
+                        at any size. A CPU reference renderer, and encoders from an SVG and from a raster.
 vexelray-fields-vexel   experimental. Vexel fields: collision rate, granularity and materials per cell, filtered by
                         combining moments, and collided with by hashed rays that hold still frame to frame.
 vexelray-fields-fractal experimental. Fractals on a rational grid of boxes (modulus rules, small textures, hashed
@@ -251,8 +253,8 @@ shader that does are in [`docs/sdg.md`](docs/sdg.md).
 
 ```java
 Svg svg = Svg.read(Path.of("badge.svg"));
-Sdg badge = Sdg.of(svg, SvgToSdg.Options.across(svg, 64));                                // a layer per fill, stroke
-Sdg photo = Sdg.trace(Raster.read(Path.of("sprite.png")), Trace.Options.DEFAULT);       // a layer per colour region
+Sdg badge = SvgToSdg.convert(svg, SvgToSdg.Options.across(svg, 64));                    // a layer per fill, stroke
+Sdg photo = Trace.trace(Raster.read(Path.of("sprite.png")), Trace.Options.DEFAULT);      // a layer per colour region
 SdgFile.write(photo, Path.of("sprite.sdg"));
 Raster big = SdgRender.render(photo, 1024, 1024);                                        // as a shader draws it
 ```

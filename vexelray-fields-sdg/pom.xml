@@ -16,11 +16,15 @@
     <name>vexelray-fields-sdg</name>
     <description>
         SDG, signed distance graphics: art as painted layers, each a distance field for where it is and a paint for
-        its colour. The .sdg file, a CPU reference renderer that draws it as a shader does, and encoders from an SVG
-        and from a raster.
+        its colour. A CPU reference renderer that draws it as a shader does, and encoders from an SVG and from a
+        raster. The file itself is vexelray-fields-sdg-format.
     </description>
 
     <dependencies>
+        <dependency>
+            <groupId>dev.vexelray.fields</groupId>
+            <artifactId>vexelray-fields-sdg-format</artifactId>
+        </dependency>
         <dependency>
             <groupId>dev.vexelray.fields</groupId>
             <artifactId>vexelray-fields-core</artifactId>

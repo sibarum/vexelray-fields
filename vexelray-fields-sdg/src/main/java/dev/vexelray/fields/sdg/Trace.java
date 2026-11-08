@@ -79,7 +79,7 @@ public final class Trace {
     private Trace() {
     }
 
-    static Sdg trace(Raster raster, Options o) {
+    public static Sdg trace(Raster raster, Options o) {
         int w = raster.width(), h = raster.height(), n = w * h;
         float[] pm = premultiplied(raster.rgba());
 

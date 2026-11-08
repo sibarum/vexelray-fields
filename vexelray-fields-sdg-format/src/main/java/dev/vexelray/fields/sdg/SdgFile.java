@@ -94,6 +94,7 @@ public final class SdgFile {
                 case Sdg.Paint.Solid solid -> {
                     paint.string("solid");
                     paint.u32(solid.rgba());
+                    paint.string(solid.role());   // 1.1
                 }
                 case Sdg.Paint.Sampled t -> {
                     paint.string("sampled");
@@ -190,7 +191,8 @@ public final class SdgFile {
         ByteBuffer p = block(c);
         String paintKind = string(p);
         Sdg.Paint paint = switch (paintKind) {
-            case "solid" -> new Sdg.Paint.Solid(p.getInt());
+            // a 1.0 writer ends the block at the colour; the role came in 1.1
+            case "solid" -> new Sdg.Paint.Solid(p.getInt(), p.remaining() >= 2 ? string(p) : "");
             case "sampled" -> new Sdg.Paint.Sampled(u16(p), u16(p), u16(p), u16(p), u16(p), p.getDouble(),
                     p.getDouble(), p.getDouble());
             default -> new Sdg.Paint.Unknown(paintKind);
