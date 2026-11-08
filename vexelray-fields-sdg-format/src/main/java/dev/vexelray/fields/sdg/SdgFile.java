@@ -1,345 +1,287 @@
 package dev.vexelray.fields.sdg;
 
-import java.io.ByteArrayOutputStream;
+import dev.vexelray.fields.sdg.schema.Drawing;
+import dev.vexelray.fields.sdg.schema.DrawingIntrabuf;
+import sibarum.intrabuf.IncompatiblePayloadException;
+import sibarum.intrabuf.IntrabufException;
+
 import java.io.IOException;
 import java.io.UncheckedIOException;
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
-import java.util.zip.DataFormatException;
-import java.util.zip.Deflater;
-import java.util.zip.Inflater;
 
 /**
- * The {@code .sdg} file: eight bytes of signature, then chunks, each a four-letter tag, a length and that many bytes,
- * little-endian throughout. {@code docs/sdg.md} is the specification; this is its reference.
+ * SDG's two forms, {@code docs/sdg.md} §4. {@code read} takes either, by its first bytes.
  *
- * <p><b>Files outlive the readers that read them, both ways.</b> A reader skips a chunk whose tag it does not know, and
- * the bytes past the end of a chunk it does know; a writer adds to the end of a chunk and never reorders it. A kind of
- * stencil or paint is a name, so a layer of a kind a reader does not know is read as not {@link Sdg.Layer#known()} and
- * skipped when drawn, and the rest of the drawing draws. A file whose major version is newer than the reader's is
- * refused whole.
+ * <ul>
+ * <li><b>{@code .sdg}, XML</b>: to read, to write by hand, to diff, and to give to anyone. Its pages are PNGs, in the
+ * file as data URIs or in files beside it. This is the form a drawing is exchanged in, and a reader of it expects a
+ * file from anyone: it is parsed with no DTD or entity, and nothing it names is fetched but a page beside it.</li>
+ * <li><b>{@code .sdgb}, compiled</b>: {@link #SIGNATURE} and one intrabuf payload of
+ * {@link dev.vexelray.fields.sdg.schema.Drawing}, for the stack to load. Intrabuf trusts its payloads, so this is
+ * for files the application built or shipped itself; one from elsewhere comes as XML and is compiled.</li>
+ * </ul>
+ *
+ * <p><b>Files outlive the readers that read them, both ways.</b> A reader skips what it does not know: an element or
+ * attribute (XML), a field (intrabuf, every message FULL), and a layer of a stencil or paint kind it does not know,
+ * read as not {@link Sdg.Layer#known()} and skipped when drawn. A file whose major version is newer than the reader's
+ * is refused whole. Every drawing either form gives back has been checked: each rectangle lies in its page.
  */
 public final class SdgFile {
 
-    /** {@code \x89SDG\r\n\x1A\n}: as PNG's, so a 7-bit channel or a rewrite of line endings is caught. */
-    static final byte[] SIGNATURE = {(byte) 0x89, 'S', 'D', 'G', 0x0D, 0x0A, 0x1A, 0x0A};
+    /** {@code \x89SDG\r\n\x1A\n} before a compiled file's payload: as PNG's, catching 7-bit and line-ending damage. */
+    public static final byte[] SIGNATURE = {(byte) 0x89, 'S', 'D', 'G', 0x0D, 0x0A, 0x1A, 0x0A};
 
-    private static final String HEAD = "SDGH", PAGE = "PAGE", LAYER = "LAYR", END = "SEND";
-
-    /** How a page's bytes are filtered before they are deflated. */
-    private static final int RAW = 0, SUB = 1;
+    /** The XML form's extension, and the compiled form's. */
+    public static final String XML = "sdg", COMPILED = "sdgb";
 
     private SdgFile() {
     }
 
-    public static void write(Sdg sdg, Path file) throws IOException {
-        Files.write(file, bytes(sdg));
-    }
+    // ------------------------------------------------------------------------------------------------- writing
 
-    public static Sdg read(Path file) throws IOException {
-        return read(Files.readAllBytes(file));
-    }
-
+    /** {@code sdg} compiled: the signature and one intrabuf payload. */
     public static byte[] bytes(Sdg sdg) {
-        Out out = new Out();
-        out.bytes(SIGNATURE);
-
-        Out head = new Out();
-        head.u16(Sdg.MAJOR);
-        head.u16(Sdg.MINOR);
-        head.f64(sdg.width());
-        head.f64(sdg.height());
-        head.u32(sdg.pages().size());
-        head.u32(sdg.layers().size());
-        out.chunk(HEAD, head);
-
-        for (Sdg.Page p : sdg.pages()) {
-            Out page = new Out();
-            page.u16(p.width());
-            page.u16(p.height());
-            byte[] raw = deflate(p.rgba());
-            byte[] sub = deflate(sub(p));
-            boolean useSub = sub.length < raw.length;
-            page.u8(useSub ? SUB : RAW);
-            page.bytes(useSub ? sub : raw);
-            out.chunk(PAGE, page);
-        }
-
-        for (Sdg.Layer l : sdg.layers()) {
-            Out layer = new Out();
-            layer.string(l.name());
-            layer.f32(l.opacity());
-            Sdg.Stencil s = l.stencil();
-            Out stencil = new Out();
-            stencil.string(s.kind());
-            stencil.u16(s.page());
-            stencil.u8(s.channel());
-            stencil.u16(s.x());
-            stencil.u16(s.y());
-            stencil.u16(s.width());
-            stencil.u16(s.height());
-            stencil.f64(s.originX());
-            stencil.f64(s.originY());
-            stencil.f64(s.scale());
-            stencil.f32((float) s.range());
-            layer.block(stencil);
-            Out paint = new Out();
-            switch (l.paint()) {
-                case Sdg.Paint.Solid solid -> {
-                    paint.string("solid");
-                    paint.u32(solid.rgba());
-                    paint.string(solid.role());   // 1.1
-                }
-                case Sdg.Paint.Sampled t -> {
-                    paint.string("sampled");
-                    paint.u16(t.page());
-                    paint.u16(t.x());
-                    paint.u16(t.y());
-                    paint.u16(t.width());
-                    paint.u16(t.height());
-                    paint.f64(t.originX());
-                    paint.f64(t.originY());
-                    paint.f64(t.scale());
-                }
-                case Sdg.Paint.Unknown u -> throw new IllegalArgumentException(
-                        "a paint of kind " + u.kind() + " has nothing to write");
-            }
-            layer.block(paint);
-            out.chunk(LAYER, layer);
-        }
-        out.chunk(END, new Out());
-        return out.toByteArray();
-    }
-
-    public static Sdg read(byte[] file) {
-        if (file.length < SIGNATURE.length || !Arrays.equals(Arrays.copyOf(file, SIGNATURE.length), SIGNATURE)) {
-            throw new IllegalArgumentException("not an SDG file: its signature is wrong");
-        }
-        ByteBuffer in = ByteBuffer.wrap(file, SIGNATURE.length, file.length - SIGNATURE.length)
-                .slice().order(ByteOrder.LITTLE_ENDIAN);
-        double width = 0, height = 0;
-        boolean headed = false, ended = false;
-        List<Sdg.Page> pages = new ArrayList<>();
-        List<Sdg.Layer> layers = new ArrayList<>();
-        while (in.remaining() >= 8 && !ended) {
-            byte[] tag = new byte[4];
-            in.get(tag);
-            long length = Integer.toUnsignedLong(in.getInt());
-            if (length > in.remaining()) {
-                throw new IllegalArgumentException("a chunk runs past the end of the file");
-            }
-            ByteBuffer c = in.slice(in.position(), (int) length).order(ByteOrder.LITTLE_ENDIAN);
-            in.position(in.position() + (int) length);
-            String t = new String(tag, StandardCharsets.US_ASCII);
-            switch (t) {
-                case HEAD -> {
-                    int major = u16(c);
-                    u16(c);   // minor: what a newer writer may have added, past what this reads, is skipped
-                    if (major != Sdg.MAJOR) {
-                        throw new IllegalArgumentException("an SDG file of version " + major + ", this reads "
-                                + Sdg.MAJOR);
-                    }
-                    width = c.getDouble();
-                    height = c.getDouble();
-                    headed = true;
-                }
-                case PAGE -> {
-                    int w = u16(c), h = u16(c), filter = c.get() & 0xFF;
-                    byte[] packed = new byte[c.remaining()];
-                    c.get(packed);
-                    byte[] rgba = inflate(packed, w * h * 4);
-                    if (filter == SUB) {
-                        unsub(rgba, w, h);
-                    } else if (filter != RAW) {
-                        throw new IllegalArgumentException("a page filtered by " + filter);
-                    }
-                    pages.add(new Sdg.Page(w, h, rgba));
-                }
-                case LAYER -> layers.add(layer(c));
-                case END -> ended = true;
-                default -> {
-                    // a chunk this reader does not know: skipped
-                }
-            }
-        }
-        if (!headed || !ended) {
-            throw new IllegalArgumentException("an SDG file " + (headed ? "cut short" : "with no header"));
-        }
-        for (Sdg.Layer l : layers) {
-            if (l.stencil().page() >= pages.size()
-                    || l.paint() instanceof Sdg.Paint.Sampled s && s.page() >= pages.size()) {
-                throw new IllegalArgumentException("layer " + l.name() + " reads a page the file does not have");
-            }
-        }
-        return new Sdg(width, height, pages, layers);
-    }
-
-    private static Sdg.Layer layer(ByteBuffer c) {
-        String name = string(c);
-        float opacity = c.getFloat();
-        ByteBuffer s = block(c);
-        String kind = string(s);
-        // a stencil of a kind this does not know is still placed by the same fields, which every kind begins with
-        Sdg.Stencil stencil = new Sdg.Stencil(kind, u16(s), s.get() & 0xFF, u16(s), u16(s), u16(s), u16(s),
-                s.getDouble(), s.getDouble(), s.getDouble(), s.getFloat());
-        ByteBuffer p = block(c);
-        String paintKind = string(p);
-        Sdg.Paint paint = switch (paintKind) {
-            // a 1.0 writer ends the block at the colour; the role came in 1.1
-            case "solid" -> new Sdg.Paint.Solid(p.getInt(), p.remaining() >= 2 ? string(p) : "");
-            case "sampled" -> new Sdg.Paint.Sampled(u16(p), u16(p), u16(p), u16(p), u16(p), p.getDouble(),
-                    p.getDouble(), p.getDouble());
-            default -> new Sdg.Paint.Unknown(paintKind);
-        };
-        return new Sdg.Layer(name, stencil, paint, opacity);
-    }
-
-    // ------------------------------------------------------------------------------------------------- the bytes
-
-    /** Each byte less the one four before it in its row: smooth fields and colours become runs of small numbers. */
-    private static byte[] sub(Sdg.Page p) {
-        byte[] in = p.rgba(), out = new byte[in.length];
-        int row = p.width() * 4;
-        for (int i = 0; i < in.length; i++) {
-            out[i] = (byte) (i % row < 4 ? in[i] : in[i] - in[i - 4]);
-        }
+        byte[] payload = DrawingIntrabuf.toBytes(SchemaMapping.toSchema(sdg));
+        byte[] out = Arrays.copyOf(SIGNATURE, SIGNATURE.length + payload.length);
+        System.arraycopy(payload, 0, out, SIGNATURE.length, payload.length);
         return out;
     }
 
-    private static void unsub(byte[] b, int w, int h) {
-        int row = w * 4;
-        for (int i = 0; i < b.length; i++) {
-            if (i % row >= 4) {
-                b[i] = (byte) (b[i] + b[i - 4]);
-            }
-        }
+    /** {@code sdg} as XML, its pages in it as data URIs. */
+    public static String xml(Sdg sdg) {
+        return SdgXml.write(sdg, SdgXml::inline);
     }
 
-    private static byte[] deflate(byte[] data) {
-        Deflater d = new Deflater(Deflater.BEST_COMPRESSION);
-        try {
-            d.setInput(data);
-            d.finish();
-            ByteArrayOutputStream out = new ByteArrayOutputStream(data.length / 4 + 64);
-            byte[] buf = new byte[1 << 16];
-            while (!d.finished()) {
-                out.write(buf, 0, d.deflate(buf));
-            }
-            return out.toByteArray();
-        } finally {
-            d.end();
-        }
+    /**
+     * Writes {@code sdg} to {@code file}: compiled if its name ends {@code .sdgb}, otherwise XML with its pages in
+     * it. Written whole to a file beside it, then moved over it, so a reader never sees half a file.
+     */
+    public static void write(Sdg sdg, Path file) throws IOException {
+        boolean compiled = file.getFileName().toString().toLowerCase(java.util.Locale.ROOT).endsWith("." + COMPILED);
+        replace(file, compiled ? bytes(sdg) : xml(sdg).getBytes(StandardCharsets.UTF_8));
     }
 
-    private static byte[] inflate(byte[] data, int size) {
-        Inflater f = new Inflater();
+    /**
+     * Writes {@code sdg} as XML to {@code file}, each page a PNG beside it named for it ({@code badge.sdg},
+     * {@code badge-p0.png}, ...), so the pages can be looked at, and the XML is short.
+     */
+    public static void writeWithPagesBeside(Sdg sdg, Path file) throws IOException {
+        Path dir = file.toAbsolutePath().getParent();
+        String name = file.getFileName().toString();
+        String stem = name.contains(".") ? name.substring(0, name.lastIndexOf('.')) : name;
         try {
-            f.setInput(data);
-            byte[] out = new byte[size];
-            int n = 0;
-            while (n < size && !f.finished()) {
-                int k = f.inflate(out, n, size - n);
-                if (k == 0 && (f.needsInput() || f.needsDictionary())) {
-                    break;
+            String xml = SdgXml.write(sdg, (i, png) -> {
+                String page = stem + "-" + SdgXml.id(i) + ".png";
+                try {
+                    replace(dir.resolve(page), png);
+                } catch (IOException e) {
+                    throw new UncheckedIOException(e);
                 }
-                n += k;
+                return escapeHref(page);
+            });
+            replace(file, xml.getBytes(StandardCharsets.UTF_8));
+        } catch (UncheckedIOException e) {
+            throw e.getCause();
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------------- reading
+
+    /** Reads either form; an XML file's pages beside it are read from beside it. */
+    public static Sdg read(Path file) throws IOException {
+        Path dir = file.toAbsolutePath().getParent();
+        try {
+            return read(Files.readAllBytes(file), path -> {
+                Path page = dir.resolve(path).normalize();
+                if (!page.startsWith(dir)) {
+                    throw new IllegalArgumentException("a page at " + path + ", above the drawing");
+                }
+                try {
+                    return Files.readAllBytes(page);
+                } catch (NoSuchFileException e) {
+                    throw new IllegalArgumentException("a page at " + path + ", and there is no such file");
+                } catch (IOException e) {
+                    throw new UncheckedIOException(e);
+                }
+            });
+        } catch (UncheckedIOException e) {
+            throw e.getCause();
+        }
+    }
+
+    /** Reads either form. An XML drawing's pages must be in it: there is nowhere to look for a page beside it. */
+    public static Sdg read(byte[] file) {
+        return read(file, null);
+    }
+
+    private static Sdg read(byte[] file, java.util.function.Function<String, byte[]> pages) {
+        if (startsWith(file, SIGNATURE)) {
+            Drawing d;
+            try {
+                d = DrawingIntrabuf.CODEC.decode(file, SIGNATURE.length, file.length - SIGNATURE.length);
+            } catch (IncompatiblePayloadException e) {
+                throw new IllegalArgumentException("an SDG file this cannot read (" + e.reason() + "): "
+                        + e.getMessage(), e);
+            } catch (IntrabufException e) {
+                throw new IllegalArgumentException("a damaged SDG file: " + e.getMessage(), e);
             }
-            if (n != size) {
-                throw new IllegalArgumentException("a page of " + n + " bytes, where " + size + " were promised");
+            return checked(SchemaMapping.fromSchema(d));
+        }
+        int at = 0;
+        if (file.length >= 3 && (file[0] & 0xFF) == 0xEF && (file[1] & 0xFF) == 0xBB && (file[2] & 0xFF) == 0xBF) {
+            at = 3;
+        }
+        while (at < file.length && (file[at] == ' ' || file[at] == '\t' || file[at] == '\r' || file[at] == '\n')) {
+            at++;
+        }
+        if (at < file.length && file[at] == '<') {
+            return checked(SdgXml.read(file, pages));
+        }
+        throw new IllegalArgumentException("not an SDG file: neither XML nor a compiled drawing");
+    }
+
+    // ------------------------------------------------------------------------------------------------- checks
+
+    /** {@code sdg}, once every rectangle has been found to lie in its page, and every number to be one. */
+    static Sdg checked(Sdg sdg) {
+        if (!Double.isFinite(sdg.width()) || !Double.isFinite(sdg.height())) {
+            throw new IllegalArgumentException("a canvas " + sdg.width() + " × " + sdg.height());
+        }
+        for (Sdg.Layer l : sdg.layers()) {
+            String n = "layer \"" + l.name() + "\"";
+            if (!(l.opacity() >= 0 && l.opacity() <= 1)) {
+                throw new IllegalArgumentException(n + " of opacity " + l.opacity() + ", outside 0 to 1");
             }
-            return out;
-        } catch (DataFormatException e) {
-            throw new IllegalArgumentException("a page whose bytes do not inflate: " + e.getMessage(), e);
+            Sdg.Stencil s = l.stencil();
+            rect(sdg, n + "'s stencil", s.page(), s.x(), s.y(), s.width(), s.height(), s.originX(), s.originY(),
+                    s.scale());
+            if (s.channel() < 0 || s.channel() > 3) {
+                throw new IllegalArgumentException(n + "'s stencil reads channel " + s.channel());
+            }
+            if (!(s.range() > 0) || !Double.isFinite(s.range())) {
+                throw new IllegalArgumentException(n + "'s stencil has a range of " + s.range());
+            }
+            if (l.paint() instanceof Sdg.Paint.Sampled p) {
+                rect(sdg, n + "'s paint", p.page(), p.x(), p.y(), p.width(), p.height(), p.originX(), p.originY(),
+                        p.scale());
+            }
+        }
+        return sdg;
+    }
+
+    private static void rect(Sdg sdg, String what, int page, int x, int y, int w, int h, double ox, double oy,
+                             double scale) {
+        if (page < 0 || page >= sdg.pages().size()) {
+            throw new IllegalArgumentException(what + " reads page " + page + ", and there are "
+                    + sdg.pages().size());
+        }
+        Sdg.Page p = sdg.pages().get(page);
+        if (x < 0 || y < 0 || w <= 0 || h <= 0 || (long) x + w > p.width() || (long) y + h > p.height()) {
+            throw new IllegalArgumentException(what + " is " + w + " × " + h + " at (" + x + ", " + y
+                    + "), past its page's " + p.width() + " × " + p.height());
+        }
+        if (!Double.isFinite(ox) || !Double.isFinite(oy) || !(scale > 0) || !Double.isFinite(scale)) {
+            throw new IllegalArgumentException(what + " is placed at (" + ox + ", " + oy + ") at a scale of "
+                    + scale);
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------------- bytes
+
+    private static boolean startsWith(byte[] b, byte[] prefix) {
+        return b.length >= prefix.length && Arrays.equals(b, 0, prefix.length, prefix, 0, prefix.length);
+    }
+
+    private static String escapeHref(String name) {
+        try {
+            return new java.net.URI(null, null, name, null).getRawPath().replace("&", "&amp;").replace("\"",
+                    "&quot;").replace("<", "&lt;");
+        } catch (java.net.URISyntaxException e) {
+            throw new IllegalArgumentException(e);
+        }
+    }
+
+    private static void replace(Path file, byte[] bytes) throws IOException {
+        Path dir = file.toAbsolutePath().getParent();
+        Path temp = Files.createTempFile(dir, file.getFileName().toString(), ".part");
+        try {
+            Files.write(temp, bytes);
+            Files.move(temp, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
         } finally {
-            f.end();
+            Files.deleteIfExists(temp);
         }
     }
 
-    private static int u16(ByteBuffer c) {
-        return c.getShort() & 0xFFFF;
-    }
+    /** {@link Sdg} to and from the intrabuf schema's records. */
+    static final class SchemaMapping {
 
-    /** A length and that many bytes, as a buffer of their own, so what a newer writer adds to one is skipped. */
-    private static ByteBuffer block(ByteBuffer c) {
-        int n = c.getInt();
-        if (n < 0 || n > c.remaining()) {
-            throw new IllegalArgumentException("a block runs past the end of its layer");
-        }
-        ByteBuffer b = c.slice(c.position(), n).order(ByteOrder.LITTLE_ENDIAN);
-        c.position(c.position() + n);
-        return b;
-    }
-
-    private static String string(ByteBuffer c) {
-        byte[] b = new byte[u16(c)];
-        c.get(b);
-        return new String(b, StandardCharsets.UTF_8);
-    }
-
-    private static final class Out extends ByteArrayOutputStream {
-
-        void u8(int v) {
-            write(v);
+        private SchemaMapping() {
         }
 
-        void u16(int v) {
-            if (v < 0 || v > 0xFFFF) {
-                throw new IllegalArgumentException(v + " does not fit in 16 bits");
+        static Drawing toSchema(Sdg sdg) {
+            List<dev.vexelray.fields.sdg.schema.Page> pages = new ArrayList<>();
+            for (Sdg.Page p : sdg.pages()) {
+                pages.add(new dev.vexelray.fields.sdg.schema.Page(Png.encode(p)));
             }
-            write(v);
-            write(v >>> 8);
-        }
-
-        void u32(int v) {
-            write(v);
-            write(v >>> 8);
-            write(v >>> 16);
-            write(v >>> 24);
-        }
-
-        void f32(float v) {
-            u32(Float.floatToIntBits(v));
-        }
-
-        void f64(double v) {
-            long b = Double.doubleToLongBits(v);
-            u32((int) b);
-            u32((int) (b >>> 32));
-        }
-
-        void bytes(byte[] b) {
-            write(b, 0, b.length);
-        }
-
-        void string(String s) {
-            byte[] b = s.getBytes(StandardCharsets.UTF_8);
-            u16(b.length);
-            bytes(b);
-        }
-
-        void block(Out body) {
-            u32(body.size());
-            try {
-                body.writeTo(this);
-            } catch (IOException e) {
-                throw new UncheckedIOException(e);
+            List<dev.vexelray.fields.sdg.schema.Layer> layers = new ArrayList<>();
+            for (Sdg.Layer l : sdg.layers()) {
+                Sdg.Stencil s = l.stencil();
+                var stencil = new dev.vexelray.fields.sdg.schema.Stencil(s.kind(), s.page(), s.channel(), s.x(),
+                        s.y(), s.width(), s.height(), s.originX(), s.originY(), s.scale(), (float) s.range());
+                var paint = switch (l.paint()) {
+                    case Sdg.Paint.Solid c -> new dev.vexelray.fields.sdg.schema.Paint("solid",
+                            new dev.vexelray.fields.sdg.schema.Solid(c.rgba(), c.role().isEmpty() ? null : c.role()),
+                            null);
+                    case Sdg.Paint.Sampled p -> new dev.vexelray.fields.sdg.schema.Paint("sampled", null,
+                            new dev.vexelray.fields.sdg.schema.Sampled(p.page(), p.x(), p.y(), p.width(),
+                                    p.height(), p.originX(), p.originY(), p.scale()));
+                    case Sdg.Paint.Unknown u -> throw new IllegalArgumentException(
+                            "a paint of kind " + u.kind() + " has nothing to write");
+                };
+                layers.add(new dev.vexelray.fields.sdg.schema.Layer(l.name(), l.opacity(), stencil, paint));
             }
+            return new Drawing(sdg.width(), sdg.height(), pages, layers);
         }
 
-        void chunk(String tag, Out body) {
-            bytes(tag.getBytes(StandardCharsets.US_ASCII));
-            u32(body.size());
-            try {
-                body.writeTo(this);
-            } catch (IOException e) {
-                throw new UncheckedIOException(e);
+        static Sdg fromSchema(Drawing d) {
+            List<Sdg.Page> pages = new ArrayList<>();
+            for (var p : d.pages()) {
+                pages.add(Png.decode(p.png()));
             }
+            List<Sdg.Layer> layers = new ArrayList<>();
+            for (var l : d.layers()) {
+                var s = l.stencil();
+                Sdg.Stencil stencil = new Sdg.Stencil(s.kind(), s.page(), s.channel(), s.x(), s.y(), s.width(),
+                        s.height(), s.originX(), s.originY(), s.scale(), s.range());
+                var p = l.paint();
+                Sdg.Paint paint = switch (p.kind()) {
+                    case "solid" -> {
+                        if (p.solid() == null) {
+                            throw new IllegalArgumentException("layer \"" + l.name() + "\": a solid paint with no colour");
+                        }
+                        yield new Sdg.Paint.Solid(p.solid().rgba(), p.solid().role());
+                    }
+                    case "sampled" -> {
+                        var t = p.sampled();
+                        if (t == null) {
+                            throw new IllegalArgumentException("layer \"" + l.name()
+                                    + "\": a sampled paint with no texture");
+                        }
+                        yield new Sdg.Paint.Sampled(t.page(), t.x(), t.y(), t.width(), t.height(), t.originX(),
+                                t.originY(), t.scale());
+                    }
+                    default -> new Sdg.Paint.Unknown(p.kind());
+                };
+                layers.add(new Sdg.Layer(l.name(), stencil, paint, l.opacity()));
+            }
+            return new Sdg(d.width(), d.height(), pages, layers);
         }
     }
 }

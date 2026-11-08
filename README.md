@@ -25,8 +25,9 @@ vexelray-fields-art     art made into any of the three: an SVG (drawn here, in J
 vexelray-fields-atlas   fields assembled into textures: GridAtlas (cells on grids, as the icon sets), ArtPair (a mark's
                         field beside its colour) and AtlasPixels (the deflated file vexelray-text's AtlasPixels reads).
 vexelray-fields-sdg-format
-                        the .sdg file alone (docs/sdg.md): Sdg, the drawing as records, and SdgFile. Depends on
-                        nothing, so the stack's readers take it and none of the encoders.
+                        the SDG file alone (docs/sdg.md): Sdg, the drawing as records, and SdgFile, which reads and
+                        writes .sdg (XML) and .sdgb (compiled, one intrabuf payload). Depends on intrabuf-runtime
+                        and nothing else, so the stack's readers take it and none of the encoders.
 vexelray-fields-sdg     SDG, signed distance graphics: art as painted layers, each a distance field and a paint, sharp
                         at any size. A CPU reference renderer, and encoders from an SVG and from a raster.
 vexelray-fields-vexel   experimental. Vexel fields: collision rate, granularity and materials per cell, filtered by
@@ -255,7 +256,8 @@ shader that does are in [`docs/sdg.md`](docs/sdg.md).
 Svg svg = Svg.read(Path.of("badge.svg"));
 Sdg badge = SvgToSdg.convert(svg, SvgToSdg.Options.across(svg, 64));                    // a layer per fill, stroke
 Sdg photo = Trace.trace(Raster.read(Path.of("sprite.png")), Trace.Options.DEFAULT);      // a layer per colour region
-SdgFile.write(photo, Path.of("sprite.sdg"));
+SdgFile.write(photo, Path.of("sprite.sdg"));                                             // XML, to read and exchange
+SdgFile.write(photo, Path.of("sprite.sdgb"));                                            // compiled, to ship
 Raster big = SdgRender.render(photo, 1024, 1024);                                        // as a shader draws it
 ```
 
@@ -267,22 +269,30 @@ Raster big = SdgRender.render(photo, 1024, 1024);                               
   fine grid as they stack, and each reaching two texels beneath the regions over it, so no seam opens where two meet;
   a region's paint its mean colour, or its own pixels as a texture if it varies (a gradient, shading), carried past its
   edge so the edge never reads a neighbour's colour.
-* **The file** is a PNG-style signature and tagged chunks: a header, pages of RGBA8 (deflated), a chunk per layer.
-  Kinds are names, and stencil and paint are each a block with its own length, so a reader skips a chunk, a field or a
-  layer it does not know and draws the rest (`whatAReaderDoesNotKnowIsSkipped`).
+* **The file has two forms, one model.** `.sdg` is XML, as SVG is: a `<page>` per page, a PNG in the file or beside
+  it, and a `<layer>` of a `<stencil>` and a `<paint>`. It is the form to read, write by hand, diff and give to
+  anyone, and it is read as from a stranger: no DTD, no entities, no page from anywhere but beside it, every rectangle
+  checked against its page. `.sdgb` is the same drawing compiled, a signature and one intrabuf payload whose messages
+  are all FULL, the way `.vxa` is: for files the application built or shipped itself, since intrabuf trusts what it
+  reads. `SdgFile.read` takes either. Both skip what they do not know (an element or attribute, a field, a layer of a
+  kind not yet invented) and draw the rest, and refuse a newer major version whole; `SdgFileTest` holds both, the
+  compiled one against a file from a later schema.
 
 **Measured.** A 100-unit badge (a gradient sky, flat fills, a star, a stroke, rounded corners) drawn at 64 px and
 magnified eight times, to 512, against the SVG drawn at 512. Mean absolute error per channel, of 255, over white: over
 every pixel, over the pixels at an edge of the truth, and over the rest.
 
-| at 8×                               |  all | edges | flat | layers | file    |
-|-------------------------------------|-----:|------:|-----:|-------:|--------:|
-| the 64 px picture, bilinear         | 5.72 | 35.97 | 4.38 |        | 1.9 kB (PNG) |
-| traced, 8 colours                   | 1.30 | 22.51 | 0.35 |      7 | 10.0 kB |
-| traced, 8 colours, 2 texels a pixel | 1.21 | 21.43 | 0.31 |      7 | 18.0 kB |
-| traced, 4 colours                   | 1.99 | 30.67 | 0.72 |      4 |  6.2 kB |
-| traced, 16 colours                  | 2.69 | 31.29 | 1.42 |     14 | 12.6 kB |
-| from the SVG, 64 texels across      | 0.27 |  4.27 | 0.09 |      5 |  5.8 kB |
+| at 8×                               |  all | edges | flat | layers | .sdgb   | .sdg, pages in it |
+|-------------------------------------|-----:|------:|-----:|-------:|--------:|--------:|
+| the 64 px picture, bilinear         | 5.72 | 35.97 | 4.38 |        | 1.9 kB (PNG) | |
+| traced, 8 colours                   | 1.30 | 22.51 | 0.35 |      7 | 10.3 kB | 15.5 kB |
+| traced, 8 colours, 2 texels a pixel | 1.21 | 21.43 | 0.31 |      7 | 18.4 kB | 27.1 kB |
+| traced, 4 colours                   | 1.99 | 30.67 | 0.72 |      4 |  6.5 kB |  9.9 kB |
+| traced, 16 colours                  | 2.69 | 31.29 | 1.42 |     14 | 13.3 kB | 20.3 kB |
+| from the SVG, 64 texels across      | 0.27 |  4.27 | 0.09 |      5 |  5.6 kB |  8.8 kB |
+
+The XML is half as large again, the price of base64 and markup; with its pages beside it, it is 1.1 to 3.3 kB (about
+230 bytes a layer) and the pages are PNGs any viewer opens.
 
 ![the 64 px picture, bilinear, traced, from the SVG, and the truth](docs/sdg-magnified.png)
 

@@ -15,7 +15,43 @@
 
     <name>vexelray-fields-sdg-format</name>
     <description>
-        The .sdg file, signed distance graphics: the drawing as records (pages, and layers of a stencil and a paint)
-        and SdgFile to read and write it. Depends on nothing but the JDK, so a reader in the stack takes this alone.
+        The SDG file, signed distance graphics: the drawing as records (pages, and layers of a stencil and a paint),
+        and SdgFile to read and write it in its two forms, .sdg (XML, to read, write by hand and exchange) and .sdgb
+        (one intrabuf payload, compiled from it, for the stack to load). Depends on the JDK and intrabuf-runtime,
+        which depends on nothing, so a reader in the stack takes this alone.
     </description>
+
+    <dependencies>
+        <dependency>
+            <groupId>sibarum.intrabuf</groupId>
+            <artifactId>intrabuf-runtime</artifactId>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <configuration>
+                    <annotationProcessorPaths>
+                        <path>
+                            <groupId>sibarum.intrabuf</groupId>
+                            <artifactId>intrabuf-processor</artifactId>
+                            <version>${intrabuf.version}</version>
+                        </path>
+                    </annotationProcessorPaths>
+                    <compilerArgs combine.children="append">
+                        <arg>-Aintrabuf.buildVersion=${project.version}</arg>
+                        <!-- Release payloads whatever the project version, as vexelray-codec-asset: a snapshot
+                             payload is refused by any build whose schema differs from its writer's, right for a
+                             message between two builds and wrong for a file that outlives the build that wrote it.
+                             So the schema only ever grows: fields at the end, @Field(since) and minor bumped. -->
+                        <arg>-Aintrabuf.snapshot=false</arg>
+                        <arg>-Aintrabuf.module=${project.artifactId}</arg>
+                    </compilerArgs>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
 </project>

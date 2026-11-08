@@ -8,17 +8,13 @@ import javax.imageio.ImageIO;
 import java.awt.image.BufferedImage;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.Arrays;
 import java.util.Locale;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -43,51 +39,25 @@ class SdgTest {
 
     static final int SMALL = 64, LARGE = 512;
 
+    /** A traced drawing and one from an SVG, through both forms (the format's own tests are in its module). */
     @Test
     void aFileReadsBackAsItWasWritten() {
-        Sdg sdg = Trace.trace(Svg.parse(BADGE).render(SMALL, SMALL, 4), Trace.Options.DEFAULT);
-        Sdg back = SdgFile.read(SdgFile.bytes(sdg));
-        assertEquals(sdg.width(), back.width());
-        assertEquals(sdg.height(), back.height());
-        assertEquals(sdg.layers(), back.layers());
-        assertEquals(sdg.pages().size(), back.pages().size());
-        for (int i = 0; i < sdg.pages().size(); i++) {
-            assertArrayEquals(sdg.pages().get(i).rgba(), back.pages().get(i).rgba());
+        Svg svg = Svg.parse(BADGE);
+        for (Sdg sdg : new Sdg[]{Trace.trace(svg.render(SMALL, SMALL, 4), Trace.Options.DEFAULT),
+                SvgToSdg.convert(svg, SvgToSdg.Options.across(svg, SMALL))}) {
+            byte[] drawn = SdgRender.render(sdg, 128, 128).rgba();
+            for (Sdg back : new Sdg[]{SdgFile.read(SdgFile.bytes(sdg)),
+                    SdgFile.read(SdgFile.xml(sdg).getBytes(StandardCharsets.UTF_8))}) {
+                assertEquals(sdg.width(), back.width());
+                assertEquals(sdg.height(), back.height());
+                assertEquals(sdg.layers(), back.layers());
+                assertEquals(sdg.pages().size(), back.pages().size());
+                for (int i = 0; i < sdg.pages().size(); i++) {
+                    assertArrayEquals(sdg.pages().get(i).rgba(), back.pages().get(i).rgba());
+                }
+                assertArrayEquals(drawn, SdgRender.render(back, 128, 128).rgba());
+            }
         }
-        assertArrayEquals(SdgRender.render(sdg, 128, 128).rgba(), SdgRender.render(back, 128, 128).rgba());
-    }
-
-    @Test
-    void whatAReaderDoesNotKnowIsSkipped() {
-        Sdg sdg = SvgToSdg.convert(Svg.parse(BADGE), SvgToSdg.Options.across(Svg.parse(BADGE), 64));
-        byte[] file = SdgFile.bytes(sdg);
-
-        // a chunk of a tag never heard of, just before the end
-        byte[] extra = chunk("FUTR", new byte[]{1, 2, 3, 4, 5});
-        int end = file.length - 8;
-        byte[] withChunk = new byte[file.length + extra.length];
-        System.arraycopy(file, 0, withChunk, 0, end);
-        System.arraycopy(extra, 0, withChunk, end, extra.length);
-        System.arraycopy(file, end, withChunk, end + extra.length, 8);
-        assertArrayEquals(SdgRender.render(sdg, 96, 96).rgba(),
-                SdgRender.render(SdgFile.read(withChunk), 96, 96).rgba());
-
-        // the first layer's paint renamed to a kind never heard of: that layer is skipped, the rest draw
-        byte[] renamed = file.clone();
-        byte[] solid = "solid".getBytes(StandardCharsets.US_ASCII);
-        int at = indexOf(renamed, solid);
-        System.arraycopy("fuzzy".getBytes(StandardCharsets.US_ASCII), 0, renamed, at, 5);
-        Sdg odd = SdgFile.read(renamed);
-        long unknown = odd.layers().stream().filter(l -> !l.known()).count();
-        assertEquals(1, unknown);
-        assertTrue(odd.layers().stream().anyMatch(l -> l.paint() instanceof Sdg.Paint.Unknown u
-                && u.kind().equals("fuzzy")));
-        SdgRender.render(odd, 96, 96);
-
-        // a newer major version is refused whole
-        byte[] newer = file.clone();
-        newer[8 + 8] = 2;
-        assertThrows(IllegalArgumentException.class, () -> SdgFile.read(newer));
     }
 
     @Test
@@ -166,23 +136,26 @@ class SdgTest {
                 {"traced, 16 colours", Trace.trace(small, Trace.Options.DEFAULT.withColours(16)), 0},
                 {"from the SVG, 64 texels", SvgToSdg.convert(svg, SvgToSdg.Options.across(svg, SMALL)), 0},
         };
-        System.out.printf(Locale.ROOT, "%-40s %8s %8s %8s %7s %9s%n", "at 8x", "all", "edges", "flat", "layers",
-                "file");
+        System.out.printf(Locale.ROOT, "%-40s %8s %8s %8s %7s %9s %9s%n", "at 8x", "all", "edges", "flat",
+                "layers", ".sdgb", ".sdg");
         for (Object[] row : rows) {
             Raster drawn;
-            String layers = "", size;
+            String layers = "", compiled, xml = "";
+            String name = ((String) row[0]).replaceAll("[^a-z0-9]+", "-");
             if (row[1] instanceof Sdg sdg) {
                 drawn = SdgRender.render(sdg, LARGE, LARGE);
                 layers = Integer.toString(sdg.layers().size());
-                size = SdgFile.bytes(sdg).length + " B";
+                compiled = SdgFile.bytes(sdg).length + " B";
+                xml = SdgFile.xml(sdg).getBytes(StandardCharsets.UTF_8).length + " B";
+                SdgFile.writeWithPagesBeside(sdg, dir.resolve(name + ".sdg"));
             } else {
                 drawn = (Raster) row[1];
-                size = png(small).length + " B png";
+                compiled = png(small).length + " B png";
             }
             Error e = Error.of(truth, drawn);
-            System.out.printf(Locale.ROOT, "%-40s %8.2f %8.2f %8.2f %7s %9s%n", row[0], e.all, e.edges, e.flat,
-                    layers, size);
-            Files.write(dir.resolve(((String) row[0]).replaceAll("[^a-z0-9]+", "-") + ".png"), png(drawn));
+            System.out.printf(Locale.ROOT, "%-40s %8.2f %8.2f %8.2f %7s %9s %9s%n", row[0], e.all, e.edges, e.flat,
+                    layers, compiled, xml);
+            Files.write(dir.resolve(name + ".png"), png(drawn));
         }
         Files.write(dir.resolve("truth.png"), png(truth));
         Files.write(dir.resolve("small.png"), png(small));
@@ -302,20 +275,5 @@ class SdgTest {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         ImageIO.write(img, "png", out);
         return out.toByteArray();
-    }
-
-    private static byte[] chunk(String tag, byte[] body) {
-        ByteBuffer b = ByteBuffer.allocate(8 + body.length).order(ByteOrder.LITTLE_ENDIAN);
-        b.put(tag.getBytes(StandardCharsets.US_ASCII)).putInt(body.length).put(body);
-        return b.array();
-    }
-
-    private static int indexOf(byte[] hay, byte[] needle) {
-        for (int i = 0; i + needle.length <= hay.length; i++) {
-            if (Arrays.equals(Arrays.copyOfRange(hay, i, i + needle.length), needle)) {
-                return i;
-            }
-        }
-        throw new AssertionError("not found");
     }
 }

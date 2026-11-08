@@ -8,8 +8,8 @@ import java.util.List;
  * what colour it is there. The edge comes from the field and stays sharp at any size; the colour comes from the paint,
  * which is one colour or a texture smooth enough to magnify. All texels are in {@link #pages}, RGBA8.
  *
- * <p>The format is in {@code docs/sdg.md}; {@link SdgFile} reads and writes it. This module holds the file alone and
- * depends on nothing. In {@code vexelray-fields-sdg}, {@code SdgRender} draws it on the CPU as a shader does, and
+ * <p>The format is in {@code docs/sdg.md}; {@link SdgFile} reads and writes it, as XML ({@code .sdg}) or compiled
+ * ({@code .sdgb}). This module holds the file alone and depends on nothing but {@code intrabuf-runtime}. In {@code vexelray-fields-sdg}, {@code SdgRender} draws it on the CPU as a shader does, and
  * {@code SvgToSdg.convert} and {@code Trace.trace} make one.
  *
  * @param width  the canvas across, in units

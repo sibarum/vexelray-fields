@@ -5,9 +5,12 @@ a colour, that stays sharp at any size. The difference is what a layer's shape i
 filled at draw time. In SDG it is a distance field, sampled once per pixel by a shader with no tessellation and no
 path rasteriser, as the stack already draws its icons and glyphs.
 
+A drawing has two forms (§4): **`.sdg`, XML**, as SVG is, to read, write by hand and exchange; and **`.sdgb`,
+compiled**, one intrabuf payload, for an application to load what it built or shipped.
+
 The reference implementation is two modules: `vexelray-fields-sdg-format` holds the file (`Sdg`, and `SdgFile` to read
-and write it) and depends on nothing; `vexelray-fields-sdg` holds `SdgRender`, which draws it as this document says a
-reader must, and `SvgToSdg.convert` and `Trace.trace`, which make one.
+and write both forms) and depends on nothing but `intrabuf-runtime`; `vexelray-fields-sdg` holds `SdgRender`, which
+draws it as this document says a reader must, and `SvgToSdg.convert` and `Trace.trace`, which make one.
 
 ## 1. Model
 
@@ -86,41 +89,95 @@ as stored in every theme.
 
 ## 4. File
 
-`.sdg`. Little-endian throughout. `u8`, `u16`, `u32`: unsigned integers; `f32`, `f64`: IEEE 754 floats; `str`: a
-`u16` length and that many bytes of UTF-8; `block`: a `u32` length and that many bytes.
+One model, two forms. A reader tells them apart by the first bytes: the signature of §4.2, or (after an optional UTF-8
+byte order mark and white space) `<`. Each holds exactly the model of §1, and converting one to the other and back loses
+nothing.
 
-```
-signature   89 53 44 47 0D 0A 1A 0A        "\x89SDG\r\n\x1A\n", as PNG's: a 7-bit channel or a line-ending
-                                            rewrite is caught
-chunk*      tag (4 ASCII bytes), length (u32), that many bytes
+| | `.sdg`, XML | `.sdgb`, compiled |
+|---|---|---|
+| for | reading, writing by hand, diffing, exchanging | an application loading its own drawings |
+| pages | PNG, in the file (`data:` URI) or beside it | PNG, in the payload |
+| from anyone? | yes: read defensively (§4.4) | no: intrabuf trusts its payloads |
+
+### 4.1 XML (`.sdg`)
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<sdg xmlns="https://sibarum.github.io/ns/sdg" version="1.1" width="100" height="100">
+  <page id="p0" width="104" height="134" href="badge-p0.png"/>
+  <page id="p1" width="76" height="68" href="data:image/png;base64,iVBORw0KGgo..."/>
+  <layer name="sky">
+    <stencil kind="msdf" page="p0" x="0" y="0" width="68" height="68" origin="-3.125 -3.125" scale="0.64" range="8"/>
+    <paint kind="sampled" page="p1" x="0" y="0" width="68" height="68" origin="-3.125 -3.125" scale="0.64"/>
+  </layer>
+  <layer name="sun" opacity="0.9">
+    <stencil kind="msdf" page="p0" x="68" y="68" width="29" height="29" origin="45.3125 10.9375" scale="0.64" range="8"/>
+    <paint kind="solid" colour="#ffcc33" role="accent"/>
+  </layer>
+</sdg>
 ```
 
-| tag | contents, in order |
+The namespace is `https://sibarum.github.io/ns/sdg`; the root is `<sdg>`. Its children, in any order, are `<page>`s
+and `<layer>`s; pages are numbered in the order they appear, and a layer names a page that comes before it.
+
+| element | attributes (**bold**: required) |
 |---|---|
-| `SDGH` | header, first. `u16` major, `u16` minor, `f64` width, `f64` height, `u32` pages, `u32` layers |
-| `PAGE` | one per page, in order (pages are numbered from 0). `u16` width, `u16` height, `u8` filter, then the texels deflated (zlib): `width · height · 4` bytes, rows top first. Filter 0: as they are; filter 1: each byte less the byte four before it in its row, the first texel of a row as it is |
-| `LAYR` | one per layer, back to front. `str` name, `f32` opacity, `block` stencil, `block` paint |
-| `SEND` | the end, empty. Nothing after it is read |
+| `sdg` | **`version`** `major.minor`; **`width`**, **`height`** in units |
+| `page` | **`id`**, any name unique in the file; **`href`**, the PNG (below); `width`, `height`, which if given must be the PNG's |
+| `layer` | `name` (default empty); `opacity` (default 1). Holds exactly one `stencil` and one `paint` |
+| `stencil` | **`kind`**; **`page`**, a page's `id`; `channel` (default 0); **`x`**, **`y`**, **`width`**, **`height`** in texels of that page; `origin`, two numbers in units, apart by white space or a comma (default `0 0`); `scale`, texels a unit (default 1); **`range`** in texels |
+| `paint`, `kind="solid"` | **`colour`**: `#rgb`, `#rgba`, `#rrggbb` or `#rrggbbaa`, straight, alpha `ff` if left out; `role` (default none, §3.2) |
+| `paint`, `kind="sampled"` | **`page`**, **`x`**, **`y`**, **`width`**, **`height`**, `origin`, `scale`, as a stencil's |
 
-**Stencil block:** `str` kind, `u16` page, `u8` channel, `u16` x, `u16` y, `u16` width, `u16` height, `f64` originX,
-`f64` originY, `f64` scale, `f32` range.
+**Numbers** are decimal: an optional sign, digits with an optional point, an optional exponent (`-3.125`, `1.0E-7`),
+finite. A writer writes the shortest decimal that reads back as the same value. **Pages** are PNG images of 8 bits a
+channel, not interlaced, in any colour type (grey, grey and alpha, RGB, RGBA, palette), read as RGBA8; gamma and colour
+profiles are not applied. A page's `href` is either a `data:image/png;base64,` URI, white space in its base64 ignored,
+or a relative URI reference to a file beside the drawing or in a folder below it: no scheme, no authority, no leading
+`/`, no `..` segment. A writer writes RGBA.
 
-**Paint block:** `str` kind, then by kind. `solid`: `u32` colour, `0xRRGGBBAA`, then (since 1.1) `str` role, empty
-for none; a block that ends at the colour has no role. `sampled`: `u16` page, `u16` x,
-`u16` y, `u16` width, `u16` height, `f64` originX, `f64` originY, `f64` scale.
+### 4.2 Compiled (`.sdgb`)
 
-### Compatibility
+The eight bytes `89 53 44 47 0D 0A 1A 0A` (`\x89SDG\r\n\x1A\n`, as PNG's, so a 7-bit channel or a line-ending rewrite
+is caught), then one [intrabuf](https://github.com/sibarum/intrabuf) payload, built-in header, of the message
+`vexelray.sdg.Drawing`, whose major and minor are the drawing's version. Every message is intrabuf FULL. The schema is
+the records of `dev.vexelray.fields.sdg.schema`; in intrabuf's types, fields in order:
 
-Files outlive the readers that read them, both ways, by these rules:
+| message | fields |
+|---|---|
+| `vexelray.sdg.Drawing` 1.1 | `float64` width, `float64` height, `list<Page>` pages, `list<Layer>` layers |
+| `vexelray.sdg.Page` | `bytes` png, as in §4.1 |
+| `vexelray.sdg.Layer` | `string` name, `float32` opacity, `Stencil` stencil, `Paint` paint |
+| `vexelray.sdg.Stencil` | `string` kind, `int32` page, channel, x, y, width, height, `float64` originX, originY, scale, `float32` range |
+| `vexelray.sdg.Paint` | `string` kind, `Solid` solid (or absent), `Sampled` sampled (or absent): the one its kind names |
+| `vexelray.sdg.Solid` 1.1 | `fixed32` rgba, `0xRRGGBBAA`; since 1, `string` role (absent for none) |
+| `vexelray.sdg.Sampled` | `int32` page, x, y, width, height, `float64` originX, originY, scale |
 
-* **A reader skips what it does not know:** a chunk with a tag it does not know, the bytes past the end of a chunk or a
-  block it has read what it knows of, and (§3) a layer of a kind it does not know.
-* **A writer only adds, at the end:** a new field goes at the end of its chunk or block and the minor version goes up.
-  Nothing is removed, reordered or retyped.
-* **A new kind of stencil starts as every stencil does** (kind, page, channel, rectangle, origin, scale, range), so a
-  reader can still tell where it is without knowing what it holds.
+### 4.3 Compatibility
+
+Files outlive the readers that read them, both ways, by these rules, which both forms keep:
+
+* **A reader skips what it does not know.** In XML: an element or attribute it does not know, and every element of
+  another namespace (another application's, which SDG leaves alone). Compiled: a field it does not know, as intrabuf FULL
+  skips one. In both: a layer whose stencil or paint is of a kind it does not know (§3) is read, and skipped when drawn.
+* **A writer only adds.** A new attribute, element or field is optional, with a default that draws as before, and the
+  minor version goes up. In the schema, a field goes at the end of its message with `since`. Nothing is removed,
+  reordered, renamed or retyped.
+* **A new kind of stencil is placed as every stencil is** (page, channel, rectangle, origin, scale, range), so a reader
+  can still tell where it is without knowing what it holds. A new kind of paint brings its fields in a message of its
+  own, on the end of `Paint`, and as attributes (or children) of `<paint>`.
 * **The major version** goes up only for a change an older reader would draw wrong. A reader refuses a file whose major
   version it does not know, whole.
+
+### 4.4 Reading a file from anyone
+
+SDG is for exchanging drawings, so a reader of the XML form takes a file to be from anyone. It reads no DTD (a file
+with a `<!DOCTYPE>` is refused), expands no entity, and fetches nothing: a page is in the file, or a file beside it,
+and an `href` that leaves the drawing's folder is refused. Before drawing, it checks that every stencil and sampled
+paint names a page there is and lies inside it, that every number is finite, every scale and range positive, every
+channel 0–3 and every opacity in 0–1, so a drawing that is read never reads outside its pages. The compiled form is
+checked the same way after decoding, but intrabuf promises less of its decoder (its payloads are a system's own), so a
+drawing from elsewhere comes as XML and is compiled by the application that ships it.
 
 ## 5. Making one (informative)
 
