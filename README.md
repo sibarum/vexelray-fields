@@ -34,6 +34,9 @@ vexelray-fields-convert every kind of field into every kind an effect wants (doc
                         value naming its hops and what it keeps, loses or needs; a route only ever a composition.
 vexelray-fields-bench   every conversion timed and its allocation measured by JMH; docs/benchmarks.md is written
                         from the run. Not shipped.
+
+(SDG against SVG and rasters, on the same art: size, load, draw and error, CPU and GPU, is docs/comparison.md,
+written by vexelray-gui-format-bench in vexelray-gui, which can reach the GPU.)
 vexelray-fields-vexel   experimental. Vexel fields: collision rate, granularity and materials per cell, filtered by
                         combining moments, and collided with by hashed rays that hold still frame to frame.
 vexelray-fields-fractal experimental. Fractals on a rational grid of boxes (modulus rules, small textures, hashed
