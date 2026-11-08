@@ -2,9 +2,10 @@
 
 **Status: ruled 2026-11-08, all five as recommended. Built the same day: the spec (1.2), both forms, the reader's
 checks, `SdgRender`, and the SVG encoder (`Svg.tree`, groups, clips, masks). A real 1.1 reader was run on a 1.2 file
-with a group: it reads both forms and draws the rest. Not built yet: the canvas's isolated pass, so the GPU skips a
-group (and says so once, `canvas:sdg-group`), and the encoder's cheap paths (pushing an opacity onto children that do
-not overlap).**
+with a group: it reads both forms and draws the rest. The GPU pass was built the same day too (below): every group
+kind is drawn on the GPU within 2/255 of `SdgRender` (vexelray-gui's `SdgCaptureTest`). Not built yet: the encoder's
+cheap paths (pushing an opacity onto children that do not overlap, a clip read in one pass), so every group with an
+opacity, a clip or a mask is drawn apart today.**
 
 ## Why
 
@@ -136,3 +137,22 @@ The pass, in four pieces:
    and freed after a few unused frames. A group off screen costs nothing.
 4. **Checked against `SdgRender`**, as every SDG drawing on the GPU is: a capture test with each group kind (opacity
    over overlap, clip, both masks, nested), within the 2/255 the other SDG captures hold.
+
+### As built (2026-11-08)
+
+* **The seam:** `WindowPresenter.prePass(Recorder)`, recorded between beginning the frame's command buffer and its
+  render pass, in `WindowedPresenter` and `DxgiPresenter` alike; `OffscreenDraw.toRgba(..., prePass)` for a capture;
+  `SampledColorTarget.record(cmd, recorder, clear)`, a target's pass into a command buffer it is given, no fence.
+* **The canvas:** `Canvas.GroupTarget`, and segments (`beginGroup`, `groupOrigin`, `endGroup`) that point the runs and
+  the pixel-to-clip mapping at a target; `Canvas.groups()` in the order a host draws them, inner first. A target is
+  the group's box on screen cut to the canvas, in powers of two; the group in its top-left corner, its mask (or its
+  clip, as an alpha mask of the clip stencil drawn white) two pixels to its right, each half cut to the group's box so
+  neither spills into the other. A group with a clip and a mask is a clip round a group with the mask. One quad lays
+  it over, by the new core primitive `GROUP` (`CoreShadelets.GROUP_PAINT`). A group with no opacity, clip or mask is
+  only its layers. `SdgPages.colocated` reaches into groups and masks.
+* **The host:** `GroupPasses` (vexelray-gui), one a window and one a capture: the canvas pipeline on the target format,
+  a pool of targets by size that rest three frames after use, each group's runs bound and drawn into its target in
+  the pre-pass. `DeviceImages` resolves a `GroupTarget` to the image it was given.
+* **Two things the capture test found:** a group cut by its clip drew past its box into its mask's half (the square
+  wider than the circle), so each half is cut to the box; and that cut's antialiased edge reached the mask's first
+  column, so the halves are two pixels apart.
