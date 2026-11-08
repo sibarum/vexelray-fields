@@ -40,8 +40,11 @@ mvn -pl vexelray-gui-format-bench exec:exec
   * **SVG, Java**: the SVG, parsed once, rasterised by vexelray-fields' renderer at 4 × 4 samples a pixel
   * **PNG 256, scaled**: a 256 px PNG, decoded once, scaled to the size by bilinear filtering
   * **PNG 1024, scaled**: a 1024 px PNG, decoded once, scaled to the size by bilinear filtering
-  * **SDG, GPU**: the SDG drawn by a node in a headless window (`GuiApp.capture`), the stack's own
-    renderer; measured for error only so far, its time waiting on GPU timestamp queries.
+  * **SDG, GPU**: the SDG drawn by a node in a headless window, the stack's own renderer: its error from
+    a capture (`GuiApp.capture`), its time from Vulkan timestamps (`GuiApp.gpuMillis`): 8 copies in a frame,
+    less an empty frame, over 8, the median of 30 frames.
+  * **PNG 1024, GPU**: the 1024 px PNG drawn the way a picture is, a still feed with its mip chain,
+    sampled at the size: the GPU's own way to show a raster, the one to set SDG against there.
 
 * **The truth** is the SVG drawn by imagelib at four times the size and averaged down four by four.
   Error is in premultiplied colour, every channel of every pixel, in steps of 1/255: the mean, the
@@ -69,12 +72,12 @@ decoded, a PNG decoded (imagelib). imagelib's SVG path parses on every draw, so 
 
 | Art | SVG | SDG .sdgb | SDG .sdg | PNG 256 | PNG 1024 |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| `badge` | 54.4 ± 23.9 µs | 712.0 ± 1230.6 µs | 873.4 ± 386.0 µs | 145.1 ± 12.1 µs | 3.86 ± 0.67 ms |
-| `rasterware` | 57.3 ± 19.9 µs | 1.34 ± 0.04 ms | 1.67 ± 0.46 ms | 131.6 ± 12.3 µs | 3.56 ± 0.79 ms |
-| `vexelray-logo` | 58.7 ± 9.6 µs | 889.7 ± 125.4 µs | 1.13 ± 0.35 ms | 107.6 ± 55.7 µs | 3.49 ± 0.55 ms |
-| `mainframe` | 54.2 ± 4.4 µs | 1.09 ± 0.06 ms | 1.32 ± 0.31 ms | 126.6 ± 32.2 µs | 3.52 ± 0.12 ms |
-| `background-icon` | 56.0 ± 1.0 µs | 1.58 ± 0.15 ms | 1.88 ± 0.08 ms | 127.2 ± 11.0 µs | 3.58 ± 0.25 ms |
-| `file-icon` | 48.8 ± 1.2 µs | 272.4 ± 22.1 µs | 402.7 ± 247.3 µs | 71.1 ± 18.1 µs | 2.98 ± 0.64 ms |
+| `badge` | 52.5 ± 18.8 µs | 651.1 ± 115.2 µs | 823.9 ± 222.7 µs | 140.9 ± 24.0 µs | 3.77 ± 0.74 ms |
+| `rasterware` | 56.1 ± 5.6 µs | 1.36 ± 0.05 ms | 1.62 ± 1.45 ms | 123.3 ± 27.1 µs | 3.44 ± 0.10 ms |
+| `vexelray-logo` | 58.6 ± 5.5 µs | 850.3 ± 52.1 µs | 1.11 ± 0.29 ms | 107.6 ± 32.0 µs | 3.46 ± 0.22 ms |
+| `mainframe` | 53.5 ± 3.5 µs | 1.09 ± 0.08 ms | 1.31 ± 0.31 ms | 128.8 ± 63.8 µs | 3.47 ± 0.15 ms |
+| `background-icon` | 59.9 ± 11.7 µs | 1.63 ± 0.14 ms | 1.88 ± 0.30 ms | 126.7 ± 49.7 µs | 3.66 ± 1.91 ms |
+| `file-icon` | 48.8 ± 1.5 µs | 272.5 ± 25.6 µs | 403.2 ± 237.1 µs | 70.3 ± 23.2 µs | 2.94 ± 0.10 ms |
 
 ## At 64 pixels
 
@@ -82,12 +85,25 @@ decoded, a PNG decoded (imagelib). imagelib's SVG path parses on every draw, so 
 
 | Art | SDG, CPU | SVG, imagelib | SVG, Java | PNG 256, scaled | PNG 1024, scaled |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| `badge` | 332.6 ± 2.5 µs | 12.63 ± 0.64 ms | 1.40 ± 0.05 ms | 87.0 ± 24.1 µs | 84.6 ± 8.3 µs |
-| `rasterware` | 440.1 ± 14.6 µs | 13.86 ± 12.53 ms | 1.49 ± 0.36 ms | 89.4 ± 6.0 µs | 89.2 ± 5.8 µs |
-| `vexelray-logo` | 300.1 ± 9.3 µs | 13.16 ± 2.05 ms | 944.0 ± 99.3 µs | 58.8 ± 0.9 µs | 57.7 ± 21.5 µs |
-| `mainframe` | 417.5 ± 6.0 µs | 12.08 ± 1.53 ms | 1.41 ± 0.24 ms | 87.4 ± 4.1 µs | 88.0 ± 1.5 µs |
-| `background-icon` | 504.1 ± 41.4 µs | 11.64 ± 2.16 ms | 1.72 ± 0.05 ms | 87.6 ± 0.9 µs | 88.4 ± 1.8 µs |
-| `file-icon` | 141.4 ± 5.5 µs | 11.78 ± 0.67 ms | 778.7 ± 229.1 µs | 64.4 ± 0.8 µs | 65.2 ± 1.0 µs |
+| `badge` | 328.8 ± 60.1 µs | 11.07 ± 4.35 ms | 1.36 ± 0.06 ms | 94.7 ± 269.7 µs | 84.5 ± 4.0 µs |
+| `rasterware` | 437.5 ± 22.4 µs | 11.67 ± 0.79 ms | 1.44 ± 0.07 ms | 86.8 ± 1.4 µs | 87.2 ± 2.3 µs |
+| `vexelray-logo` | 289.2 ± 11.3 µs | 11.82 ± 4.51 ms | 907.9 ± 48.0 µs | 56.7 ± 2.0 µs | 55.7 ± 1.1 µs |
+| `mainframe` | 414.2 ± 30.1 µs | 11.90 ± 0.72 ms | 1.41 ± 0.10 ms | 89.4 ± 3.7 µs | 89.2 ± 11.7 µs |
+| `background-icon` | 500.8 ± 20.2 µs | 12.49 ± 8.54 ms | 1.73 ± 0.16 ms | 86.8 ± 0.4 µs | 87.2 ± 2.7 µs |
+| `file-icon` | 144.2 ± 5.8 µs | 11.72 ± 1.12 ms | 744.8 ± 256.8 µs | 63.1 ± 3.0 µs | 63.7 ± 1.6 µs |
+
+### GPU draw time
+
+One drawing at the size, by Vulkan timestamps (see *Method*).
+
+| Art | SDG, GPU | PNG 1024, GPU |
+| --- | ---: | ---: |
+| `badge` | 0.9 µs | 0.1 µs |
+| `rasterware` | 1.6 µs | 0.1 µs |
+| `vexelray-logo` | 1.3 µs | 0.0 µs |
+| `mainframe` | 1.5 µs | 0.0 µs |
+| `background-icon` | 6.9 µs | 0.0 µs |
+| `file-icon` | 6.5 µs | 0.1 µs |
 
 ### Error against the truth
 
@@ -108,12 +124,25 @@ Mean / worst / share of pixels past 8.
 
 | Art | SDG, CPU | SVG, imagelib | SVG, Java | PNG 256, scaled | PNG 1024, scaled |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| `badge` | 5.22 ± 1.27 ms | 12.51 ± 1.67 ms | 21.16 ± 0.53 ms | 1.35 ± 0.17 ms | 1.38 ± 0.14 ms |
-| `rasterware` | 6.91 ± 2.93 ms | 13.51 ± 1.57 ms | 25.82 ± 5.13 ms | 1.39 ± 0.41 ms | 1.39 ± 1.10 ms |
-| `vexelray-logo` | 4.46 ± 0.27 ms | 11.31 ± 1.59 ms | 14.20 ± 3.42 ms | 896.6 ± 116.9 µs | 913.2 ± 287.1 µs |
-| `mainframe` | 6.42 ± 0.06 ms | 12.47 ± 0.53 ms | 21.92 ± 1.92 ms | 1.37 ± 0.13 ms | 1.36 ± 0.04 ms |
-| `background-icon` | 7.75 ± 0.30 ms | 13.24 ± 0.96 ms | 27.02 ± 0.68 ms | 1.37 ± 0.03 ms | 1.37 ± 0.05 ms |
-| `file-icon` | 2.21 ± 0.10 ms | 11.86 ± 1.68 ms | 13.75 ± 1.40 ms | 1.01 ± 0.02 ms | 1.01 ± 0.04 ms |
+| `badge` | 5.10 ± 0.55 ms | 12.34 ± 9.31 ms | 20.80 ± 1.97 ms | 1.37 ± 0.05 ms | 1.36 ± 0.03 ms |
+| `rasterware` | 6.68 ± 0.17 ms | 12.35 ± 0.37 ms | 21.64 ± 1.29 ms | 1.35 ± 0.05 ms | 1.36 ± 0.08 ms |
+| `vexelray-logo` | 4.31 ± 0.25 ms | 11.94 ± 0.72 ms | 13.22 ± 0.92 ms | 867.3 ± 34.0 µs | 870.4 ± 17.3 µs |
+| `mainframe` | 6.41 ± 0.29 ms | 12.31 ± 1.19 ms | 21.84 ± 2.11 ms | 1.40 ± 0.04 ms | 1.39 ± 0.16 ms |
+| `background-icon` | 7.76 ± 0.64 ms | 13.20 ± 1.84 ms | 26.64 ± 2.62 ms | 1.35 ± 0.04 ms | 1.36 ± 0.04 ms |
+| `file-icon` | 2.20 ± 0.04 ms | 11.94 ± 0.99 ms | 13.06 ± 1.10 ms | 985.1 ± 4.0 µs | 987.0 ± 18.6 µs |
+
+### GPU draw time
+
+One drawing at the size, by Vulkan timestamps (see *Method*).
+
+| Art | SDG, GPU | PNG 1024, GPU |
+| --- | ---: | ---: |
+| `badge` | 8.2 µs | 2.9 µs |
+| `rasterware` | 15.8 µs | 2.9 µs |
+| `vexelray-logo` | 9.6 µs | 2.8 µs |
+| `mainframe` | 14.4 µs | 2.8 µs |
+| `background-icon` | 25.5 µs | 2.9 µs |
+| `file-icon` | 10.8 µs | 2.9 µs |
 
 ### Error against the truth
 
@@ -134,12 +163,25 @@ Mean / worst / share of pixels past 8.
 
 | Art | SDG, CPU | SVG, imagelib | SVG, Java | PNG 256, scaled | PNG 1024, scaled |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| `badge` | 82.56 ± 1.28 ms | 18.23 ± 0.97 ms | 341.48 ± 448.67 ms | 21.99 ± 5.76 ms | 21.61 ± 1.61 ms |
-| `rasterware` | 109.22 ± 3.53 ms | 21.06 ± 27.42 ms | 391.61 ± 534.33 ms | 22.37 ± 2.40 ms | 21.85 ± 5.83 ms |
-| `vexelray-logo` | 70.89 ± 5.63 ms | 17.24 ± 17.47 ms | 249.92 ± 464.88 ms | 14.51 ± 1.15 ms | 13.89 ± 2.58 ms |
-| `mainframe` | 101.98 ± 2.29 ms | 18.04 ± 0.78 ms | 427.65 ± 709.55 ms | 21.90 ± 0.96 ms | 21.76 ± 0.65 ms |
-| `background-icon` | 124.09 ± 18.45 ms | 27.97 ± 2.22 ms | 516.81 ± 717.98 ms | 22.02 ± 1.01 ms | 21.88 ± 0.89 ms |
-| `file-icon` | 35.33 ± 1.68 ms | 17.17 ± 2.45 ms | 229.89 ± 316.58 ms | 16.18 ± 0.63 ms | 16.03 ± 0.81 ms |
+| `badge` | 79.89 ± 3.04 ms | 17.97 ± 3.69 ms | 327.68 ± 387.57 ms | 21.69 ± 4.29 ms | 21.56 ± 1.28 ms |
+| `rasterware` | 106.15 ± 6.11 ms | 18.58 ± 1.10 ms | 364.70 ± 272.94 ms | 21.78 ± 1.03 ms | 21.57 ± 0.95 ms |
+| `vexelray-logo` | 68.13 ± 5.54 ms | 16.53 ± 0.72 ms | 217.08 ± 92.57 ms | 14.00 ± 0.57 ms | 13.69 ± 0.61 ms |
+| `mainframe` | 100.62 ± 2.95 ms | 18.69 ± 0.72 ms | 432.80 ± 438.67 ms | 22.42 ± 0.44 ms | 22.20 ± 0.19 ms |
+| `background-icon` | 122.81 ± 16.22 ms | 27.79 ± 3.27 ms | 482.75 ± 1361.66 ms | 21.87 ± 0.99 ms | 21.58 ± 0.46 ms |
+| `file-icon` | 34.97 ± 0.53 ms | 15.60 ± 1.89 ms | 219.83 ± 91.00 ms | 15.80 ± 0.63 ms | 15.67 ± 0.28 ms |
+
+### GPU draw time
+
+One drawing at the size, by Vulkan timestamps (see *Method*).
+
+| Art | SDG, GPU | PNG 1024, GPU |
+| --- | ---: | ---: |
+| `badge` | 71.3 µs | 25.1 µs |
+| `rasterware` | 154.6 µs | 27.7 µs |
+| `vexelray-logo` | 95.7 µs | 24.8 µs |
+| `mainframe` | 150.9 µs | 24.9 µs |
+| `background-icon` | 218.9 µs | 25.2 µs |
+| `file-icon` | 55.8 µs | 25.1 µs |
 
 ### Error against the truth
 
