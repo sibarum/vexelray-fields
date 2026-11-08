@@ -96,3 +96,43 @@ the comparison suite (the next piece of work) will measure next to SVG's own off
 Once ruled, the order: the spec and both forms (with the compatibility tests, a 1.1 reader on a 1.2 file); `SdgRender`;
 the SVG encoder; the canvas's isolated pass, checked against `SdgRender`; then the suite's background and file-type
 icons go back to the SDG route.
+
+## The GPU pass: design (ruled 2026-11-08, all four as recommended)
+
+What the frame does today (mapped from the code): one command buffer and one render pass a window a frame.
+`WindowedPresenter.renderFrame` begins the command buffer, begins the swapchain pass (clear), and records the canvas's
+runs; `GuiWindow.draw` has already emitted the tree into one `Canvas`, one vertex buffer and one table buffer (set 2).
+`SampledColorTarget` exists (RGBA8, colour attachment and sampled image, its own pass ending in SHADER_READ_ONLY) and a
+viewport node samples one, but nothing renders a canvas into one within a frame, and nothing draws a subtree apart:
+subtree opacity is multiplied into each element.
+
+The pass, in four pieces:
+
+1. **A seam before the main pass** (vexelray-vulkan): `renderFrame` gains a pre-pass recorder between
+   `vkBeginCommandBuffer` and `vkCmdBeginRenderPass`, so offscreen passes record into the frame's own command buffer.
+   No fence, no stall; the target pass's final layout is already the barrier. The capture path (`OffscreenDraw`) and
+   the other presenter backends get the same seam.
+2. **Segments in the canvas** (vexelray-canvas): `Canvas.sdg` meets a group that needs isolation and opens a segment:
+   the group's layers (and its mask's) are recorded as runs of that segment, aimed at a transient target the size of
+   the group's bounds on screen, and the parent gets one composite quad, an image run over the transient with a group
+   look (opacity, the mask's kind, the clip's stencil). Groups that need no buffer (rows 1 to 3 of *Drawing it fast*)
+   are drawn in the parent's pass as before, the clip a second stencil read in the SDG painter.
+3. **Targets and a pipeline** (vexelray-gui `GuiWindow`): a second canvas pipeline on the target format (same shaders,
+   `GuiApp.canvasConfig`, dynamic viewport, one a device), a pool of transient targets a window keyed by size class,
+   and the segments recorded in the pre-pass seam, nested segments first.
+4. **The composite look** (vexelray-shadelets): reads the group's target and its mask, multiplies, lays over.
+
+### Rulings
+
+**Ruled 2026-11-08: all four accepted as recommended.**
+
+1. **The mask without a second image binding.** Set 1 holds one image. *Recommended:* the group and its mask render
+   side by side into **one** transient (two halves of its width), so the composite reads both from the one image it
+   has bound, as an art pair holds its field beside its colour. The alternative, a second image at set 1, changes the
+   pipeline layout every canvas element shares.
+2. **One record space.** *Recommended:* a segment's records go into the window's one table buffer, after the main
+   canvas's, so set 2 stays one buffer and one set; a second table buffer per target is the alternative.
+3. **Transients sized to the group on screen**, clipped to the window, in size classes (powers of two) pooled a window
+   and freed after a few unused frames. A group off screen costs nothing.
+4. **Checked against `SdgRender`**, as every SDG drawing on the GPU is: a capture test with each group kind (opacity
+   over overlap, clip, both masks, nested), within the 2/255 the other SDG captures hold.
