@@ -260,7 +260,8 @@ rectangle and let the GPU blend, or draw the whole canvas as one quad and loop o
 * **Analytic gradients.** A gradient is baked into texels today; `linear` and `radial` paint kinds with their stops
   would be smaller and exact.
 * **MTSDF stencils**, the true distance in alpha, for effects (glows, shadows, outlines) that need distance far from
-  the edge (see the README, *Log space* and *Past the texture's edge*).
+  the edge (see the README, *Log space* and *Past the texture's edge*). Field Painter's plan proposes an `sdf-log` kind (1.3)
+  for effects that need only the distance ([`field-painter.md`](field-painter.md)).
 * **Sharp corners from a raster.** A traced raster's stencils are SDFs from a mask, so its corners are as round as the
   raster's pixels make them, and a feature thinner than half a pixel is lost. Fitting curves and corners to a region's
   outline, then making an MSDF from those, would sharpen them. The conversion that does it now exists (Mask → Shape → MSDF,

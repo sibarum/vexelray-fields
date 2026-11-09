@@ -93,6 +93,8 @@ for the same result; where it is a lossy shortcut, the exact route sits beside i
 * **Vexel field ↔ anything 2D.** A vexel field is 3D and holds a probability of a hit and its material, not a
   distance. A 2D slice of it, or a vexel field from an extruded SDG, is a conversion with real choices: the depth, the
   granularity, the materials. Those are for the author to define before anything is built.
+* **Nested field ↔ SDG and the rest.** Field Painter's nested field (one channel, outlines at even values, painted
+  slope) is drafted as a source kind with its own edges in [`field-painter.md`](field-painter.md), for ruling.
 * **Fractal coverage ↔ field.** Its `rasterize` is already a conversion to a 3D coverage grid. A distance from it
   needs the footprint model above in 3D.
 
