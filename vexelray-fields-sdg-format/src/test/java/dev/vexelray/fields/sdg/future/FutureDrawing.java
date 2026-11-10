@@ -7,10 +7,11 @@ import sibarum.intrabuf.annotation.IntrabufMessage;
 
 import java.util.List;
 
-/** The drawing as a later writer might have it: a field on the end, and layers grown too. */
-@IntrabufMessage(name = "vexelray.sdg.Drawing", major = 1, minor = 3, compat = Compat.FULL)
+/** The drawing as a later writer might have it: 1.3's fonts at 3, a field of its own at 4, and layers grown too. */
+@IntrabufMessage(name = "vexelray.sdg.Drawing", major = 1, minor = 4, compat = Compat.FULL)
 public record FutureDrawing(double width, double height,
                             @Field(nonNull = true) List<Page> pages,
                             @Field(nonNull = true) List<FutureLayer> layers,
-                            @Field(since = 3) String author) {
+                            @Field(since = 3) List<FutureFont> fonts,
+                            @Field(since = 4) String author) {
 }

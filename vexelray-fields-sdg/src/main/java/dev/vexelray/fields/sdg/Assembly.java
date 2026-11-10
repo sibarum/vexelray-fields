@@ -34,7 +34,7 @@ final class Assembly {
      * {@link Group} is a group of nodes, its clip the stencil of pending item {@code clip} (or -1 for none) and its mask
      * nodes of {@code maskKind} (or null for none).
      */
-    sealed interface Node permits Shape, Group {
+    sealed interface Node permits Shape, Group, Text {
     }
 
     record Shape(int index) implements Node {
@@ -44,9 +44,38 @@ final class Assembly {
             implements Node {
     }
 
+    /**
+     * Text (SDG 1.3): glyphs of pending font {@code font}, painted {@code solid}, or by the texture of pending item
+     * {@code texture} (-1 for none).
+     */
+    record Text(String name, float opacity, int font, double size, List<Sdg.Placed> glyphs, String string,
+                Sdg.Paint.Solid solid, int texture) implements Node {
+    }
+
+    /** A font being made: its glyphs are added as text is set, and their fields pended once the text is all set. */
+    static final class Font {
+        final String family, style, license;
+        final double ascender, descender, lineHeight;
+        final List<Glyph> glyphs = new ArrayList<>();
+
+        Font(String family, String style, double ascender, double descender, double lineHeight, String license) {
+            this.family = family;
+            this.style = style;
+            this.ascender = ascender;
+            this.descender = descender;
+            this.lineHeight = lineHeight;
+            this.license = license;
+        }
+    }
+
+    /** A glyph: its field the stencil of pending item {@code field}, placed in ems (-1 for none), as {@link Sdg.Glyph}. */
+    record Glyph(int field, double advance, String codepoints) {
+    }
+
     private final double width, height;
     private final List<Pending> layers = new ArrayList<>();
     private final List<Node> root = new ArrayList<>();
+    private final List<Font> fonts = new ArrayList<>();
 
     Assembly(double width, double height) {
         this.width = width;
@@ -67,6 +96,18 @@ final class Assembly {
         return layers.size() - 1;
     }
 
+    /** A font to make: its index, for a {@link Text}. */
+    int font(Font font) {
+        fonts.add(font);
+        return fonts.size() - 1;
+    }
+
+    /** A colour texture to pack, for a {@link Text}: its index. */
+    int pendTexture(Texture texture) {
+        layers.add(new Pending("", null, null, texture, 1f));
+        return layers.size() - 1;
+    }
+
     /** Every layer added, in order, packed. */
     Sdg build() {
         return build(root);
@@ -81,7 +122,9 @@ final class Assembly {
         List<Integer> sdf = new ArrayList<>(), msdf = new ArrayList<>(), colour = new ArrayList<>();
         for (int i = 0; i < n; i++) {
             Pending p = layers.get(i);
-            (p.stencil.field().kind() == FieldKind.SDF ? sdf : msdf).add(i);
+            if (p.stencil != null) {
+                (p.stencil.field().kind() == FieldKind.SDF ? sdf : msdf).add(i);
+            }
             if (p.texture != null) {
                 colour.add(i);
             }
@@ -152,6 +195,9 @@ final class Assembly {
         Sdg.Layer[] shaped = new Sdg.Layer[n];
         for (int i = 0; i < n; i++) {
             Pending p = layers.get(i);
+            if (p.stencil == null) {
+                continue;   // a texture alone, for text
+            }
             Field f = p.stencil.field();
             Spot s = stencilAt[i];
             Sdg.Stencil stencil = new Sdg.Stencil(f.kind() == FieldKind.SDF ? Sdg.Stencil.SDF : Sdg.Stencil.MSDF,
@@ -167,17 +213,37 @@ final class Assembly {
             }
             shaped[i] = paint == null ? null : new Sdg.Layer(p.name, stencil, paint, p.opacity);
         }
-        return new Sdg(width, height, pages, laid(nodes, placed, shaped));
+        List<Sdg.Font> made = new ArrayList<>();
+        for (Font f : fonts) {
+            List<Sdg.Glyph> glyphs = new ArrayList<>();
+            for (Glyph g : f.glyphs) {
+                glyphs.add(new Sdg.Glyph(g.field() < 0 ? null : placed[g.field()], g.advance(), g.codepoints()));
+            }
+            made.add(new Sdg.Font(f.family, f.style, f.ascender, f.descender, f.lineHeight, glyphs, f.license));
+        }
+        return new Sdg(width, height, pages, laid(nodes, placed, shaped, textureAt), made);
     }
 
-    private static List<Sdg.Layer> laid(List<Node> nodes, Sdg.Stencil[] placed, Sdg.Layer[] shaped) {
+    private List<Sdg.Layer> laid(List<Node> nodes, Sdg.Stencil[] placed, Sdg.Layer[] shaped, Spot[] textureAt) {
         List<Sdg.Layer> out = new ArrayList<>();
         for (Node node : nodes) {
             switch (node) {
                 case Shape s -> out.add(shaped[s.index()]);
                 case Group g -> out.add(Sdg.Layer.group(g.name(), g.opacity(), new Sdg.Group(
-                        laid(g.children(), placed, shaped), g.clip() < 0 ? null : placed[g.clip()],
-                        g.maskKind() == null ? null : new Sdg.Mask(g.maskKind(), laid(g.mask(), placed, shaped)))));
+                        laid(g.children(), placed, shaped, textureAt), g.clip() < 0 ? null : placed[g.clip()],
+                        g.maskKind() == null ? null
+                                : new Sdg.Mask(g.maskKind(), laid(g.mask(), placed, shaped, textureAt)))));
+                case Text t -> {
+                    Sdg.Paint paint = t.solid();
+                    if (t.texture() >= 0) {
+                        Spot at = textureAt[t.texture()];
+                        Texture tx = layers.get(t.texture()).texture;
+                        paint = new Sdg.Paint.Sampled(at.page, at.x, at.y, tx.width(), tx.height(), tx.originX(),
+                                tx.originY(), tx.scale());
+                    }
+                    out.add(Sdg.Layer.text(t.name(), t.opacity(), paint,
+                            new Sdg.Text(t.font(), t.size(), t.glyphs(), t.string())));
+                }
             }
         }
         return out;

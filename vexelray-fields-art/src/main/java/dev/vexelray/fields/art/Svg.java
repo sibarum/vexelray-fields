@@ -49,8 +49,9 @@ import java.util.Set;
  * {@code display}, {@code visibility}, and {@code transform}, as attributes or in a {@code style} attribute. Elements
  * in other namespaces (an editor's own) are passed over.
  *
- * <p>Text is left out, as {@code vexelray-gui}'s icon bake leaves it out of a silhouette: at the sizes a field is
- * made for, letters are a smear, and nothing here has fonts to set them in. Linear and radial gradients are drawn
+ * <p>Text is left out of {@link #render}, {@link #outline} and {@link #parts}, as {@code vexelray-gui}'s icon bake
+ * leaves it out of a silhouette: nothing here has fonts to set it in. {@link #tree} keeps it, as {@link SvgText}, for
+ * whoever has the fonts (SDG's encoder sets it as text layers). Linear and radial gradients are drawn
  * as SVG has them: in either units, transformed, focused, padded, reflected or repeated, and inherited by
  * {@code href}.
  *
@@ -671,10 +672,11 @@ public final class Svg {
         void element(Element e, Affine ctm, Style inherited, List<SvgNode> out) {
             refuse(e);
             String n = name(e);
-            if (QUIET.contains(n) || "none".equals(Style.property(e, "display"))) {
+            boolean text = n.equals("text");   // in the tree, text is kept, to be set in a font by whoever has one
+            if (QUIET.contains(n) && !text || "none".equals(Style.property(e, "display"))) {
                 return;
             }
-            if (!n.equals("g") && !n.equals("a") && !n.equals("use") && !SHAPES.contains(n)) {
+            if (!n.equals("g") && !n.equals("a") && !n.equals("use") && !SHAPES.contains(n) && !text) {
                 throw new IllegalArgumentException("<" + n + "> is not drawn here");
             }
             if (++depth > 64) {
@@ -691,11 +693,16 @@ public final class Svg {
                 boolean masked = maskRef != null && !maskRef.equals("none");
                 boolean clipped = clipRef != null && !clipRef.equals("none");
                 // a shape's own opacity is its parts' (exact unless its fill and stroke overlap); a group's is the group's
-                boolean faded = style.opacity < 1 && !SHAPES.contains(n);
+                boolean faded = style.opacity < 1 && !SHAPES.contains(n) && !text;
                 boolean alone = masked || clipped || faded;
                 List<SvgNode> into = alone ? new ArrayList<>() : out;
                 if (n.equals("use")) {
                     element(used(e), m, style, into);
+                } else if (text) {
+                    SvgText t = text(e, m, style, parter.owner);
+                    if (!t.runs().isEmpty()) {
+                        into.add(t);
+                    }
                 } else if (!SHAPES.contains(n)) {
                     children(e, m, style, into);
                 } else {
@@ -769,6 +776,128 @@ public final class Svg {
                         c[3] = 1;
                     }, white, 1f, null));
         }
+    }
+
+    // ---------------------------------------------------------------------------------------------------- text
+
+    /**
+     * A {@code <text>}, drawn with transform {@code m} and style {@code style}, as runs: its characters with white
+     * space collapsed as SVG's default {@code xml:space} does, each element's {@code x}, {@code y}, {@code dx} and
+     * {@code dy} lists given to its characters in order (a nested element's over its parent's), and a run started
+     * wherever the style changes or a character is placed. Refused: a transform that turns, skews, flips or stretches
+     * it (a text layer can only be moved and scaled), a stroke, {@code textPath} and {@code tref}.
+     */
+    SvgText text(Element e, Affine m, Style style, String owner) {
+        double tiny = 1e-12 * Math.max(Math.abs(m.a()), Math.abs(m.d()));
+        if (Math.abs(m.b()) > tiny || Math.abs(m.c()) > tiny || !(m.a() > 0)
+                || Math.abs(m.a() - m.d()) > 1e-9 * m.a()) {
+            throw new IllegalArgumentException("<text> turned, skewed, flipped or stretched by its transform is not"
+                    + " drawn here");
+        }
+        Characters cs = new Characters();
+        float opacity = style.opacity;
+        collect(e, style, cs);
+        if (cs.text.length() > 0 && cs.text.charAt(cs.text.length() - 1) == ' ') {
+            cs.text.setLength(cs.text.length() - 1);   // no space at the end
+            cs.style.removeLast();
+        }
+        int n = cs.text.length();
+        double[] x = nan(n), y = nan(n), dx = new double[n], dy = new double[n];
+        boolean[] placed = new boolean[n];
+        for (int[] range : cs.ranges) {
+            Element el = cs.elements.get(range[2]);
+            double vw = viewBox.width(), vh = viewBox.height();
+            give(el, "x", vw, range, x, placed);
+            give(el, "y", vh, range, y, placed);
+            give(el, "dx", vw, range, dx, placed);
+            give(el, "dy", vh, range, dy, placed);
+        }
+        List<SvgText.Run> runs = new ArrayList<>();
+        int start = 0;
+        for (int i = 1; i <= n; i++) {
+            if (i == n || cs.style.get(i) != cs.style.get(start) || placed[i]) {
+                Style s = cs.style.get(start);
+                SvgText.Fill fill = s.fill == null ? null : new SvgText.Fill(s.fill, m, viewBox);
+                runs.add(new SvgText.Run(cs.text.substring(start, i), x[start], y[start], dx[start], dy[start],
+                        s.fontFamily, s.fontSize, s.fontWeight, s.italic, s.anchor, s.letterSpacing, fill,
+                        s.visible ? s.fillOpacity * opacity : 0));
+                start = i;
+            }
+        }
+        return new SvgText(owner != null ? owner : e.getAttribute("id").isEmpty() ? null : e.getAttribute("id"), runs,
+                m);
+    }
+
+    /** The characters of a {@code <text>} as they are collected: each with its style, each element's span of them. */
+    private static final class Characters {
+        final StringBuilder text = new StringBuilder();
+        final List<Style> style = new ArrayList<>();
+        final List<Element> elements = new ArrayList<>();
+        final List<int[]> ranges = new ArrayList<>();   // start, end, element: in document order, parents first
+        boolean afterSpace = true;   // so none at the start
+    }
+
+    private void collect(Element e, Style style, Characters cs) {
+        if (style.stroke != null && style.strokeWidth > 0) {
+            throw new IllegalArgumentException("<" + name(e) + "> with a stroke is not drawn here");
+        }
+        int[] range = {cs.text.length(), 0, cs.elements.size()};
+        cs.elements.add(e);
+        cs.ranges.add(range);
+        for (Node c = e.getFirstChild(); c != null; c = c.getNextSibling()) {
+            if (c.getNodeType() == Node.TEXT_NODE || c.getNodeType() == Node.CDATA_SECTION_NODE) {
+                for (char ch : c.getNodeValue().toCharArray()) {
+                    if (ch == '\n' || ch == '\r') {
+                        continue;
+                    }
+                    if (ch == '\t' || ch == ' ') {
+                        if (cs.afterSpace) {
+                            continue;
+                        }
+                        ch = ' ';
+                    }
+                    cs.afterSpace = ch == ' ';
+                    cs.text.append(ch);
+                    cs.style.add(style);
+                }
+            } else if (c instanceof Element el && (el.getNamespaceURI() == null || NS.equals(el.getNamespaceURI()))) {
+                String n = name(el);
+                switch (n) {
+                    case "tspan", "a" -> {
+                        if (!"none".equals(Style.property(el, "display"))) {
+                            collect(el, style.with(el, this), cs);
+                        }
+                    }
+                    case "title", "desc", "metadata" -> {
+                        // describes the text; not part of it
+                    }
+                    default -> throw new IllegalArgumentException("<" + n + "> in <text> is not drawn here");
+                }
+            }
+        }
+        range[1] = cs.text.length();
+    }
+
+    /**
+     * Element {@code e}'s list {@code name} given to its characters, in order, past the end of the list none: absolute
+     * into {@code to} (a later, nested element's over an earlier one's), or for {@code dx}, {@code dy} relative.
+     */
+    private static void give(Element e, String name, double of, int[] range, double[] to, boolean[] placed) {
+        String v = e.getAttribute(name).strip();
+        if (v.isEmpty()) {
+            return;
+        }
+        String[] parts = v.split("[\\s,]+");
+        for (int k = 0; k < parts.length && range[0] + k < range[1] && range[0] + k < to.length; k++) {
+            to[range[0] + k] = length(parts[k], of);
+            placed[range[0] + k] = true;
+        }
+    }
+
+    private static double[] nan(int n) {
+        double[] a = new double[n];
+        java.util.Arrays.fill(a, Double.NaN);
+        return a;
     }
 
     // ---------------------------------------------------------------------------------------------------- parts

@@ -87,6 +87,84 @@ class SdgFileTest {
         assertTrue(xml.contains("<sdg xmlns=\"https://sibarum.github.io/ns/sdg\" version=\"" + Sdg.MAJOR + "." + Sdg.MINOR + "\""), xml);
     }
 
+    /**
+     * Text (1.3): a font of three glyphs (a space, an MSDF, an SDF in a channel), a line of it in a role, and a word of
+     * it in a group, painted from a texture, its string awkward.
+     */
+    static Sdg withText() {
+        Sdg.Font font = new Sdg.Font("Test Sans", "Regular", 1.069, -0.293, 1.362, List.of(
+                new Sdg.Glyph(null, 0.26, " "),
+                new Sdg.Glyph(new Sdg.Stencil(Sdg.Stencil.MSDF, 0, 0, 0, 0, 12, 14, -0.0625, -0.8125, 16, 4), 0.74, "H"),
+                new Sdg.Glyph(new Sdg.Stencil(Sdg.Stencil.SDF, 0, 2, 12, 0, 8, 14, -0.03125, -0.84375, 16, 4), 0.25,
+                        "fi")), "SIL Open Font License 1.1 & \"friends\"");
+        Sdg.Text line = new Sdg.Text(0, 24, List.of(new Sdg.Placed(1, 4, 30), new Sdg.Placed(0, 21.76, 30),
+                new Sdg.Placed(2, 28.0, 30)), "H fi");
+        Sdg.Text word = new Sdg.Text(0, 12.5, List.of(new Sdg.Placed(2, 1e-7, 50.125)), "fi\n★ <é>");
+        Sdg.Stencil s = new Sdg.Stencil(Sdg.Stencil.SDF, 0, 1, 0, 0, 20, 16, 0, 0, 0.5, 4);
+        return new Sdg(64, 64, List.of(page(20, 16, 5), page(8, 8, 6)), List.of(
+                new Sdg.Layer("back", s, new Sdg.Paint.Solid(0x202020FF), 1),
+                Sdg.Layer.text("title", 1, new Sdg.Paint.Solid(0xFFFFFFFF, "foreground"), line),
+                Sdg.Layer.group("box", 0.5f, new Sdg.Group(List.of(
+                        Sdg.Layer.text("", 0.75f, new Sdg.Paint.Sampled(1, 0, 0, 8, 8, 0, 40, 0.5), word)), s, null))),
+                List.of(font));
+    }
+
+    @Test
+    void textReadsBackInBothForms() {
+        Sdg sdg = withText();
+        String xml = SdgFile.xml(sdg);
+        for (Sdg back : new Sdg[]{SdgFile.read(xml.getBytes(StandardCharsets.UTF_8)),
+                SdgFile.read(SdgFile.bytes(sdg))}) {
+            assertSameDrawing(sdg, back);
+            assertEquals(sdg.fonts(), back.fonts());
+        }
+        assertEquals(xml, SdgFile.xml(SdgFile.read(SdgFile.bytes(SdgFile.read(xml.getBytes(StandardCharsets.UTF_8))))));
+        assertTrue(xml.contains("<font id=\"f0\" family=\"Test Sans\""), xml);
+        assertTrue(xml.contains("glyphs=\"1 4 30  0 21.76 30  2 28 30\""), xml);
+        Sdg.Layer title = sdg.layers().get(1);
+        assertTrue(title.isText());
+        assertFalse(title.known());   // not a shape: a reader that draws text asks isText() first
+    }
+
+    @Test
+    void aRoleTakesToText() {
+        Sdg themed = withText().withRoles(java.util.Map.of("title", "accent"));
+        Sdg.Layer title = themed.layers().get(1);
+        assertTrue(title.isText());
+        assertEquals("accent", ((Sdg.Paint.Solid) title.paint()).role());
+        assertEquals(withText().fonts(), themed.fonts());
+    }
+
+    /** A reader from before text: in a compiled file it finds a layer of a stencil kind it does not know, and skips it. */
+    @Test
+    void aReaderFromBeforeTextSkipsIt() {
+        byte[] file = SdgFile.bytes(withText());
+        PastDrawing old = PastDrawingIntrabuf.CODEC.decode(file, SdgFile.SIGNATURE.length,
+                file.length - SdgFile.SIGNATURE.length);
+        assertEquals(3, old.layers().size());
+        assertEquals(Sdg.Stencil.TEXT, old.layers().get(1).stencil().kind());
+        assertEquals("solid", old.layers().get(1).paint().kind());
+        // and a 1.2 reader of the XML passes over <font> and <text> as elements it does not know
+        String xml = SdgFile.xml(withText());
+        assertTrue(xml.contains("\n  <text name=\"title\""), xml);
+    }
+
+    @Test
+    void textThatNamesWhatIsNotThereIsRefused() {
+        Sdg sdg = withText();
+        Sdg.Text bad = new Sdg.Text(0, 24, List.of(new Sdg.Placed(3, 0, 0)), "");
+        Sdg noGlyph = new Sdg(64, 64, sdg.pages(), List.of(Sdg.Layer.text("x", 1, new Sdg.Paint.Solid(-1), bad)),
+                sdg.fonts());
+        assertThrows(IllegalArgumentException.class, () -> SdgFile.read(SdgFile.bytes(noGlyph)));
+        Sdg noFont = new Sdg(64, 64, sdg.pages(), List.of(Sdg.Layer.text("x", 1, new Sdg.Paint.Solid(-1),
+                new Sdg.Text(1, 24, List.of(), ""))), sdg.fonts());
+        assertThrows(IllegalArgumentException.class, () -> SdgFile.read(SdgFile.xml(noFont).getBytes(StandardCharsets.UTF_8)));
+        String noSize = SdgFile.xml(sdg).replace(" size=\"24\"", " size=\"0\"");
+        assertThrows(IllegalArgumentException.class, () -> SdgFile.read(noSize.getBytes(StandardCharsets.UTF_8)));
+        String offPage = SdgFile.xml(sdg).replace("width=\"12\" height=\"14\"", "width=\"40\" height=\"14\"");
+        assertThrows(IllegalArgumentException.class, () -> SdgFile.read(offPage.getBytes(StandardCharsets.UTF_8)));
+    }
+
     /** One page of one texel and two solid layers, the second in a role. */
     static Sdg twoLayers() {
         Sdg.Stencil stencil = new Sdg.Stencil(Sdg.Stencil.SDF, 0, 0, 0, 0, 1, 1, 0, 0, 1, 4);
@@ -201,10 +279,10 @@ class SdgFileTest {
         FutureStencil s = new FutureStencil("sdf", 0, 1, 0, 0, 8, 8, 0, 0, 1, 4, 0.5f);
         FutureDrawing later = new FutureDrawing(8, 8, List.of(new Page(Png.encode(page(8, 8, 4)))), List.of(
                 new FutureLayer("old", 1, s, new FuturePaint("solid", new Solid(0x123456FF, "foreground"), null,
-                        null), null, "multiply"),
+                        null), null, null, "multiply"),
                 new FutureLayer("new", 0.5f, s, new FuturePaint("linear", null, null,
-                        new FutureLinear(0, 0, 8, 8, List.of(0xFFFFFFFF, 0x000000FF))), null, null)),
-                "someone");
+                        new FutureLinear(0, 0, 8, 8, List.of(0xFFFFFFFF, 0x000000FF))), null, null, null)),
+                null, "someone");
         byte[] payload = FutureDrawingIntrabuf.toBytes(later);
         byte[] file = Arrays.copyOf(SdgFile.SIGNATURE, SdgFile.SIGNATURE.length + payload.length);
         System.arraycopy(payload, 0, file, SdgFile.SIGNATURE.length, payload.length);

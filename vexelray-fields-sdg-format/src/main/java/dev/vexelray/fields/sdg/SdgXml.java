@@ -55,9 +55,63 @@ final class SdgXml {
             s.append("  <page id=\"").append(id(i)).append("\" width=\"").append(p.width()).append("\" height=\"")
                     .append(p.height()).append("\" href=\"").append(href.href(i, Png.encode(p))).append("\"/>\n");
         }
+        for (int i = 0; i < sdg.fonts().size(); i++) {
+            font(s, i, sdg.fonts().get(i));
+        }
         layers(s, sdg.layers(), "  ");
         s.append("</sdg>\n");
         return s.toString();
+    }
+
+    /** A font (since 1.3): {@code <font>} holding its {@code <glyph>}s, in order, each a stencil's attributes or none. */
+    private static void font(StringBuilder s, int index, Sdg.Font f) {
+        s.append("  <font id=\"").append(fontId(index)).append("\" family=\"").append(escape(f.family()))
+                .append("\" style=\"").append(escape(f.style())).append("\" ascender=\"").append(num(f.ascender()))
+                .append("\" descender=\"").append(num(f.descender())).append("\" line-height=\"")
+                .append(num(f.lineHeight())).append('"');
+        if (!f.license().isEmpty()) {
+            s.append(" license=\"").append(escape(f.license())).append('"');
+        }
+        s.append(">\n");
+        for (Sdg.Glyph g : f.glyphs()) {
+            s.append("    <glyph advance=\"").append(num(g.advance())).append('"');
+            if (!g.codepoints().isEmpty()) {
+                s.append(" codepoints=\"").append(escape(g.codepoints())).append('"');
+            }
+            if (g.field() != null) {
+                stencilAttributes(s, g.field());
+            }
+            s.append("/>\n");
+        }
+        s.append("  </font>\n");
+    }
+
+    /** Text (since 1.3): {@code <text>} with its font, size, string and glyphs, holding its {@code <paint>}. */
+    private static void text(StringBuilder s, Sdg.Layer l, String in) {
+        Sdg.Text t = l.text();
+        s.append(in).append("<text name=\"").append(escape(l.name())).append('"');
+        if (l.opacity() != 1f) {
+            s.append(" opacity=\"").append(num(l.opacity())).append('"');
+        }
+        s.append(" font=\"").append(fontId(t.font())).append("\" size=\"").append(num(t.size())).append('"');
+        if (!t.string().isEmpty()) {
+            s.append(" string=\"").append(escape(t.string())).append('"');
+        }
+        s.append(" glyphs=\"");
+        for (int i = 0; i < t.glyphs().size(); i++) {
+            Sdg.Placed p = t.glyphs().get(i);
+            if (i > 0) {
+                s.append("  ");
+            }
+            s.append(p.glyph()).append(' ').append(num(p.x())).append(' ').append(num(p.y()));
+        }
+        s.append("\">\n");
+        paint(s, l.paint(), in + "  ");
+        s.append(in).append("</text>\n");
+    }
+
+    static String fontId(int font) {
+        return "f" + font;
     }
 
     /** {@code layers} at indent {@code in}: each a {@code <layer>}, or a {@code <group>} with its clip, mask and layers. */
@@ -67,30 +121,38 @@ final class SdgXml {
                 group(s, l, in);
                 continue;
             }
+            if (l.isText()) {
+                text(s, l, in);
+                continue;
+            }
             s.append(in).append("<layer name=\"").append(escape(l.name())).append('"');
             if (l.opacity() != 1f) {
                 s.append(" opacity=\"").append(num(l.opacity())).append('"');
             }
             s.append(">\n");
             stencil(s, "stencil", l.stencil(), in + "  ");
-            switch (l.paint()) {
-                case Sdg.Paint.Solid c -> {
-                    s.append(in).append("  <paint kind=\"solid\" colour=\"#").append(String.format(Locale.ROOT,
-                            "%08x", c.rgba())).append('"');
-                    if (!c.role().isEmpty()) {
-                        s.append(" role=\"").append(escape(c.role())).append('"');
-                    }
-                    s.append("/>\n");
-                }
-                case Sdg.Paint.Sampled p -> {
-                    s.append(in).append("  <paint kind=\"sampled\" page=\"").append(id(p.page())).append('"');
-                    rect(s, p.x(), p.y(), p.width(), p.height(), p.originX(), p.originY(), p.scale());
-                    s.append("/>\n");
-                }
-                case Sdg.Paint.Unknown u -> throw new IllegalArgumentException(
-                        "a paint of kind " + u.kind() + " has nothing to write");
-            }
+            paint(s, l.paint(), in + "  ");
             s.append(in).append("</layer>\n");
+        }
+    }
+
+    private static void paint(StringBuilder s, Sdg.Paint paint, String in) {
+        switch (paint) {
+            case Sdg.Paint.Solid c -> {
+                s.append(in).append("<paint kind=\"solid\" colour=\"#").append(String.format(Locale.ROOT,
+                        "%08x", c.rgba())).append('"');
+                if (!c.role().isEmpty()) {
+                    s.append(" role=\"").append(escape(c.role())).append('"');
+                }
+                s.append("/>\n");
+            }
+            case Sdg.Paint.Sampled p -> {
+                s.append(in).append("<paint kind=\"sampled\" page=\"").append(id(p.page())).append('"');
+                rect(s, p.x(), p.y(), p.width(), p.height(), p.originX(), p.originY(), p.scale());
+                s.append("/>\n");
+            }
+            case Sdg.Paint.Unknown u -> throw new IllegalArgumentException(
+                    "a paint of kind " + u.kind() + " has nothing to write");
         }
     }
 
@@ -115,13 +177,18 @@ final class SdgXml {
     }
 
     private static void stencil(StringBuilder s, String element, Sdg.Stencil t, String in) {
-        s.append(in).append('<').append(element).append(" kind=\"").append(escape(t.kind())).append("\" page=\"")
-                .append(id(t.page())).append('"');
+        s.append(in).append('<').append(element);
+        stencilAttributes(s, t);
+        s.append("/>\n");
+    }
+
+    private static void stencilAttributes(StringBuilder s, Sdg.Stencil t) {
+        s.append(" kind=\"").append(escape(t.kind())).append("\" page=\"").append(id(t.page())).append('"');
         if (t.channel() != 0) {
             s.append(" channel=\"").append(t.channel()).append('"');
         }
         rect(s, t.x(), t.y(), t.width(), t.height(), t.originX(), t.originY(), t.scale());
-        s.append(" range=\"").append(num((float) t.range())).append("\"/>\n");
+        s.append(" range=\"").append(num((float) t.range())).append('"');
     }
 
     /** Where a page goes: its {@code href}. */
@@ -224,8 +291,9 @@ final class SdgXml {
         }
         double width = real(root, "width", Double.NaN), height = real(root, "height", Double.NaN);
 
-        Map<String, Integer> ids = new HashMap<>();
+        Map<String, Integer> ids = new HashMap<>(), fontIds = new HashMap<>();
         List<Sdg.Page> pageList = new ArrayList<>();
+        List<Sdg.Font> fonts = new ArrayList<>();
         List<Sdg.Layer> layers = new ArrayList<>();
         for (Element e : children(root)) {
             switch (e.getLocalName()) {
@@ -243,18 +311,70 @@ final class SdgXml {
                     }
                     pageList.add(p);
                 }
+                case "font" -> {
+                    String id = required(e, "id");
+                    if (fontIds.putIfAbsent(id, fonts.size()) != null) {
+                        throw new IllegalArgumentException("two fonts called " + id);
+                    }
+                    fonts.add(font(e, ids));
+                }
                 case "layer" -> layers.add(layer(e, ids));
-                case "group" -> layers.add(group(e, ids, 1));
+                case "group" -> layers.add(group(e, ids, fontIds, 1));
+                case "text" -> layers.add(text(e, ids, fontIds));
                 default -> {
                     // an element this reader does not know: skipped
                 }
             }
         }
-        return new Sdg(width, height, pageList, layers);
+        return new Sdg(width, height, pageList, layers, fonts);
+    }
+
+    /** A {@code <font>} (since 1.3): its metrics, and its {@code <glyph>}s in order. */
+    private static Sdg.Font font(Element e, Map<String, Integer> ids) {
+        List<Sdg.Glyph> glyphs = new ArrayList<>();
+        for (Element g : children(e)) {
+            if (!g.getLocalName().equals("glyph")) {
+                continue;   // an element this reader does not know: skipped
+            }
+            glyphs.add(new Sdg.Glyph(g.hasAttribute("kind") ? stencil(g, ids) : null, real(g, "advance", 0),
+                    g.getAttribute("codepoints")));
+        }
+        return new Sdg.Font(e.getAttribute("family"), e.getAttribute("style"), real(e, "ascender", 0),
+                real(e, "descender", 0), real(e, "line-height", 0), glyphs, e.getAttribute("license"));
+    }
+
+    /** A {@code <text>} (since 1.3): its font, size, string and glyphs, and the one {@code <paint>} it holds. */
+    private static Sdg.Layer text(Element e, Map<String, Integer> ids, Map<String, Integer> fontIds) {
+        String name = e.hasAttribute("name") ? e.getAttribute("name") : "";
+        String fontId = required(e, "font");
+        Integer font = fontIds.get(fontId);
+        if (font == null) {
+            throw new IllegalArgumentException("text " + name + " is set in font " + fontId
+                    + ", which no <font> before it is");
+        }
+        String all = e.getAttribute("glyphs").strip();
+        String[] parts = all.isEmpty() ? new String[0] : all.split("[\\s,]+");
+        if (parts.length % 3 != 0) {
+            throw new IllegalArgumentException("text " + name + "'s glyphs \"" + all
+                    + "\": each is a glyph and its x and y");
+        }
+        List<Sdg.Placed> placed = new ArrayList<>(parts.length / 3);
+        for (int i = 0; i < parts.length; i += 3) {
+            int glyph;
+            try {
+                glyph = Integer.parseInt(parts[i]);
+            } catch (NumberFormatException x) {
+                throw new IllegalArgumentException("text " + name + " sets glyph \"" + parts[i]
+                        + "\", not a whole number");
+            }
+            placed.add(new Sdg.Placed(glyph, number(parts[i + 1], "glyph's x"), number(parts[i + 2], "glyph's y")));
+        }
+        Sdg.Text text = new Sdg.Text(font, real(e, "size", Double.NaN), placed, e.getAttribute("string"));
+        return Sdg.Layer.text(name, (float) real(e, "opacity", 1), paint(only(e, "paint", name), ids), text);
     }
 
     /** A {@code <group>} {@code depth} deep: its {@code <clip>}, its {@code <mask>}, and its layers and groups in order. */
-    private static Sdg.Layer group(Element e, Map<String, Integer> ids, int depth) {
+    private static Sdg.Layer group(Element e, Map<String, Integer> ids, Map<String, Integer> fontIds, int depth) {
         String name = e.hasAttribute("name") ? e.getAttribute("name") : "";
         if (depth > Sdg.Group.MAX_DEPTH) {
             throw new IllegalArgumentException("group " + name + " nests groups past " + Sdg.Group.MAX_DEPTH + " deep");
@@ -266,7 +386,8 @@ final class SdgXml {
         for (Element c : children(e)) {
             switch (c.getLocalName()) {
                 case "layer" -> layers.add(layer(c, ids));
-                case "group" -> layers.add(group(c, ids, depth + 1));
+                case "group" -> layers.add(group(c, ids, fontIds, depth + 1));
+                case "text" -> layers.add(text(c, ids, fontIds));
                 case "clip" -> {
                     if (clip != null) {
                         throw new IllegalArgumentException("group " + name + " has two of <clip>");
@@ -281,7 +402,8 @@ final class SdgXml {
                     for (Element ml : children(c)) {
                         switch (ml.getLocalName()) {
                             case "layer" -> m.add(layer(ml, ids));
-                            case "group" -> m.add(group(ml, ids, depth + 1));
+                            case "group" -> m.add(group(ml, ids, fontIds, depth + 1));
+                            case "text" -> m.add(text(ml, ids, fontIds));
                             default -> {
                                 // skipped, as at the top
                             }
@@ -307,18 +429,18 @@ final class SdgXml {
         String name = e.hasAttribute("name") ? e.getAttribute("name") : "";
         float opacity = (float) real(e, "opacity", 1);
         Element st = only(e, "stencil", name), pt = only(e, "paint", name);
-        Sdg.Stencil stencil = new Sdg.Stencil(required(st, "kind"), page(st, ids), integer(st, "channel", 0),
-                integer(st, "x", -1), integer(st, "y", -1), integer(st, "width", -1), integer(st, "height", -1),
-                pair(st, 0), pair(st, 1), real(st, "scale", 1), (float) real(st, "range", Double.NaN));
+        return new Sdg.Layer(name, stencil(st, ids), paint(pt, ids), opacity);
+    }
+
+    private static Sdg.Paint paint(Element pt, Map<String, Integer> ids) {
         String kind = required(pt, "kind");
-        Sdg.Paint paint = switch (kind) {
+        return switch (kind) {
             case "solid" -> new Sdg.Paint.Solid(colour(pt), pt.getAttribute("role"));
             case "sampled" -> new Sdg.Paint.Sampled(page(pt, ids), integer(pt, "x", -1), integer(pt, "y", -1),
                     integer(pt, "width", -1), integer(pt, "height", -1), pair(pt, 0), pair(pt, 1),
                     real(pt, "scale", 1));
             default -> new Sdg.Paint.Unknown(kind);
         };
-        return new Sdg.Layer(name, stencil, paint, opacity);
     }
 
     private static byte[] href(String id, String href, Function<String, byte[]> pages) {
@@ -466,13 +588,14 @@ final class SdgXml {
         for (Element c : children(layer)) {
             if (c.getLocalName().equals(name)) {
                 if (found != null) {
-                    throw new IllegalArgumentException("layer " + layerName + " has two of <" + name + ">");
+                    throw new IllegalArgumentException(layer.getLocalName() + " " + layerName + " has two of <"
+                            + name + ">");
                 }
                 found = c;
             }
         }
         if (found == null) {
-            throw new IllegalArgumentException("layer " + layerName + " has no <" + name + ">");
+            throw new IllegalArgumentException(layer.getLocalName() + " " + layerName + " has no <" + name + ">");
         }
         return found;
     }

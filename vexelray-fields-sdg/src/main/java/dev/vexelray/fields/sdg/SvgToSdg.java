@@ -7,6 +7,7 @@ import dev.vexelray.fields.art.Svg;
 import dev.vexelray.fields.art.SvgGroup;
 import dev.vexelray.fields.art.SvgNode;
 import dev.vexelray.fields.art.SvgPart;
+import dev.vexelray.fields.art.SvgText;
 import dev.vexelray.fields.msdf.Msdf;
 import dev.vexelray.fields.sdf.MaskSdf;
 import dev.vexelray.fields.shape.Bounds;
@@ -29,13 +30,22 @@ public final class SvgToSdg {
      * @param texelsPerUnit texels of field (and of baked gradient) to a unit of the view box
      * @param spread        texels of margin round each layer, the farthest its field reaches outside, and half its
      *                      range
+     * @param fonts         what text is set in ({@link FontSet})
+     * @param warnings      told what was not done as the SVG asked: a family with no face, a character with no glyph
      */
-    public record Options(double texelsPerUnit, int spread) {
+    public record Options(double texelsPerUnit, int spread, FontSet fonts, java.util.function.Consumer<String> warnings) {
 
         public Options {
             if (!(texelsPerUnit > 0) || spread < 1) {
                 throw new IllegalArgumentException(texelsPerUnit + " texels a unit, " + spread + " of margin");
             }
+            java.util.Objects.requireNonNull(fonts);
+            java.util.Objects.requireNonNull(warnings);
+        }
+
+        /** No fonts given; warnings to standard error. */
+        public Options(double texelsPerUnit, int spread) {
+            this(texelsPerUnit, spread, FontSet.EMPTY, w -> System.err.println("SvgToSdg: " + w));
         }
 
         /** {@code texels} across the view box's longer side for {@code svg}, a margin of 4. */
@@ -43,22 +53,37 @@ public final class SvgToSdg {
             Bounds vb = svg.viewBox();
             return new Options(texels / Math.max(vb.width(), vb.height()), 4);
         }
+
+        /** These options, text set in {@code fonts}. */
+        public Options withFonts(FontSet fonts) {
+            return new Options(texelsPerUnit, spread, fonts, warnings);
+        }
+
+        /** These options, warnings told to {@code warnings}. */
+        public Options withWarnings(java.util.function.Consumer<String> warnings) {
+            return new Options(texelsPerUnit, spread, fonts, warnings);
+        }
     }
 
     private SvgToSdg() {
     }
 
     /**
-     * {@code svg} as an SDG: a layer per fill and stroke, and a group (SDG 1.2) for each element drawn apart, one with a
-     * group opacity, a {@code clip-path} or a {@code mask} ({@link Svg#tree}).
+     * {@code svg} as an SDG: a layer per fill and stroke, a group (SDG 1.2) for each element drawn apart, one with a
+     * group opacity, a {@code clip-path} or a {@code mask} ({@link Svg#tree}), and text layers (SDG 1.3) for its text,
+     * set in {@link Options#fonts}.
      */
     public static Sdg convert(Svg svg, Options o) {
         Bounds vb = svg.viewBox();
         Assembly a = new Assembly(vb.width(), vb.height());
-        return a.build(nodes(svg.tree(), a, vb, o, new int[1]));
+        TextSetter text = new TextSetter(a, o, vb);
+        List<Assembly.Node> nodes = nodes(svg.tree(), a, vb, o, new int[1], text);
+        text.finish();
+        return a.build(nodes);
     }
 
-    private static List<Assembly.Node> nodes(List<SvgNode> tree, Assembly a, Bounds vb, Options o, int[] count) {
+    private static List<Assembly.Node> nodes(List<SvgNode> tree, Assembly a, Bounds vb, Options o, int[] count,
+                                             TextSetter text) {
         List<Assembly.Node> out = new java.util.ArrayList<>();
         for (SvgNode node : tree) {
             switch (node) {
@@ -68,6 +93,7 @@ public final class SvgToSdg {
                         out.add(new Assembly.Shape(i));
                     }
                 }
+                case SvgText t -> out.addAll(text.set(t));
                 case SvgGroup g -> {
                     int clip = -1;
                     if (!g.clip().isEmpty()) {
@@ -76,8 +102,8 @@ public final class SvgToSdg {
                             continue;   // clipped to nothing
                         }
                     }
-                    List<Assembly.Node> mask = g.maskKind() == null ? List.of() : nodes(g.mask(), a, vb, o, count);
-                    List<Assembly.Node> children = nodes(g.children(), a, vb, o, count);
+                    List<Assembly.Node> mask = g.maskKind() == null ? List.of() : nodes(g.mask(), a, vb, o, count, text);
+                    List<Assembly.Node> children = nodes(g.children(), a, vb, o, count, text);
                     out.add(new Assembly.Group(g.name().orElse("group " + ++count[0]), g.opacity(), clip,
                             g.maskKind(), mask, children));
                 }

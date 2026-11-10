@@ -154,6 +154,24 @@ public final class SdgFile {
         if (!Double.isFinite(sdg.width()) || !Double.isFinite(sdg.height())) {
             throw new IllegalArgumentException("a canvas " + sdg.width() + " × " + sdg.height());
         }
+        for (int f = 0; f < sdg.fonts().size(); f++) {
+            Sdg.Font font = sdg.fonts().get(f);
+            for (int g = 0; g < font.glyphs().size(); g++) {
+                Sdg.Glyph glyph = font.glyphs().get(g);
+                String n = "glyph " + g + " of font " + f + " (" + font.family() + ")";
+                if (!Double.isFinite(glyph.advance())) {
+                    throw new IllegalArgumentException(n + " advances " + glyph.advance());
+                }
+                if (glyph.field() != null) {
+                    stencil(sdg, n, glyph.field());
+                }
+            }
+            if (!Double.isFinite(font.ascender()) || !Double.isFinite(font.descender())
+                    || !Double.isFinite(font.lineHeight())) {
+                throw new IllegalArgumentException("font " + f + " (" + font.family() + ") has metrics "
+                        + font.ascender() + ", " + font.descender() + ", " + font.lineHeight());
+            }
+        }
         layers(sdg, sdg.layers(), 0);
         return sdg;
     }
@@ -178,10 +196,34 @@ public final class SdgFile {
                 layers(sdg, l.group().layers(), depth + 1);
                 continue;
             }
-            stencil(sdg, n + "'s stencil", l.stencil());
+            if (l.isText()) {
+                text(sdg, n, l.text());
+            } else {
+                stencil(sdg, n + "'s stencil", l.stencil());
+            }
             if (l.paint() instanceof Sdg.Paint.Sampled p) {
                 rect(sdg, n + "'s paint", p.page(), p.x(), p.y(), p.width(), p.height(), p.originX(), p.originY(),
                         p.scale());
+            }
+        }
+    }
+
+    /** A text layer's font is one the drawing has, its size a size, and every glyph one of the font's, placed somewhere. */
+    private static void text(Sdg sdg, String n, Sdg.Text t) {
+        if (t.font() < 0 || t.font() >= sdg.fonts().size()) {
+            throw new IllegalArgumentException(n + " is set in font " + t.font() + ", and there are "
+                    + sdg.fonts().size());
+        }
+        if (!(t.size() > 0) || !Double.isFinite(t.size())) {
+            throw new IllegalArgumentException(n + " is set at a size of " + t.size());
+        }
+        int glyphs = sdg.fonts().get(t.font()).glyphs().size();
+        for (Sdg.Placed p : t.glyphs()) {
+            if (p.glyph() < 0 || p.glyph() >= glyphs) {
+                throw new IllegalArgumentException(n + " sets glyph " + p.glyph() + ", and its font has " + glyphs);
+            }
+            if (!Double.isFinite(p.x()) || !Double.isFinite(p.y())) {
+                throw new IllegalArgumentException(n + " sets a glyph at (" + p.x() + ", " + p.y() + ")");
             }
         }
     }
@@ -250,7 +292,41 @@ public final class SdgFile {
             for (Sdg.Page p : sdg.pages()) {
                 pages.add(new dev.vexelray.fields.sdg.schema.Page(Png.encode(p)));
             }
-            return new Drawing(sdg.width(), sdg.height(), pages, toSchema(sdg.layers()));
+            List<dev.vexelray.fields.sdg.schema.Font> fonts = new ArrayList<>();
+            for (Sdg.Font f : sdg.fonts()) {
+                List<dev.vexelray.fields.sdg.schema.Glyph> glyphs = new ArrayList<>();
+                for (Sdg.Glyph g : f.glyphs()) {
+                    glyphs.add(new dev.vexelray.fields.sdg.schema.Glyph(g.field() == null ? null : toSchema(g.field()),
+                            g.advance(), g.codepoints().isEmpty() ? null : g.codepoints()));
+                }
+                fonts.add(new dev.vexelray.fields.sdg.schema.Font(f.family(), f.style(), f.ascender(), f.descender(),
+                        f.lineHeight(), glyphs, f.license().isEmpty() ? null : f.license()));
+            }
+            return new Drawing(sdg.width(), sdg.height(), pages, toSchema(sdg.layers()), fonts);
+        }
+
+        private static dev.vexelray.fields.sdg.schema.Text toSchema(Sdg.Text t) {
+            List<Integer> glyphs = new ArrayList<>(t.glyphs().size());
+            List<Double> x = new ArrayList<>(t.glyphs().size()), y = new ArrayList<>(t.glyphs().size());
+            for (Sdg.Placed p : t.glyphs()) {
+                glyphs.add(p.glyph());
+                x.add(p.x());
+                y.add(p.y());
+            }
+            return new dev.vexelray.fields.sdg.schema.Text(t.font(), t.size(), glyphs, x, y,
+                    t.string().isEmpty() ? null : t.string());
+        }
+
+        private static dev.vexelray.fields.sdg.schema.Paint toSchema(Sdg.Paint paint) {
+            return switch (paint) {
+                case Sdg.Paint.Solid c -> new dev.vexelray.fields.sdg.schema.Paint("solid",
+                        new dev.vexelray.fields.sdg.schema.Solid(c.rgba(), c.role().isEmpty() ? null : c.role()), null);
+                case Sdg.Paint.Sampled p -> new dev.vexelray.fields.sdg.schema.Paint("sampled", null,
+                        new dev.vexelray.fields.sdg.schema.Sampled(p.page(), p.x(), p.y(), p.width(), p.height(),
+                                p.originX(), p.originY(), p.scale()));
+                case Sdg.Paint.Unknown u -> throw new IllegalArgumentException(
+                        "a paint of kind " + u.kind() + " has nothing to write");
+            };
         }
 
         private static dev.vexelray.fields.sdg.schema.Stencil toSchema(Sdg.Stencil s) {
@@ -269,20 +345,11 @@ public final class SdgFile {
                     var group = new dev.vexelray.fields.sdg.schema.Group(toSchema(g.layers()),
                             g.clip() == null ? null : toSchema(g.clip()), mask);
                     layers.add(new dev.vexelray.fields.sdg.schema.Layer(l.name(), l.opacity(), stencil,
-                            new dev.vexelray.fields.sdg.schema.Paint(Sdg.Stencil.GROUP, null, null), group));
+                            new dev.vexelray.fields.sdg.schema.Paint(Sdg.Stencil.GROUP, null, null), group, null));
                     continue;
                 }
-                var paint = switch (l.paint()) {
-                    case Sdg.Paint.Solid c -> new dev.vexelray.fields.sdg.schema.Paint("solid",
-                            new dev.vexelray.fields.sdg.schema.Solid(c.rgba(), c.role().isEmpty() ? null : c.role()),
-                            null);
-                    case Sdg.Paint.Sampled p -> new dev.vexelray.fields.sdg.schema.Paint("sampled", null,
-                            new dev.vexelray.fields.sdg.schema.Sampled(p.page(), p.x(), p.y(), p.width(),
-                                    p.height(), p.originX(), p.originY(), p.scale()));
-                    case Sdg.Paint.Unknown u -> throw new IllegalArgumentException(
-                            "a paint of kind " + u.kind() + " has nothing to write");
-                };
-                layers.add(new dev.vexelray.fields.sdg.schema.Layer(l.name(), l.opacity(), stencil, paint, null));
+                layers.add(new dev.vexelray.fields.sdg.schema.Layer(l.name(), l.opacity(), stencil,
+                        toSchema(l.paint()), null, l.isText() ? toSchema(l.text()) : null));
             }
             return layers;
         }
@@ -292,7 +359,32 @@ public final class SdgFile {
             for (var p : d.pages()) {
                 pages.add(Png.decode(p.png()));
             }
-            return new Sdg(d.width(), d.height(), pages, fromSchema(d.layers()));
+            List<Sdg.Font> fonts = new ArrayList<>();
+            if (d.fonts() != null) {
+                for (var f : d.fonts()) {
+                    List<Sdg.Glyph> glyphs = new ArrayList<>();
+                    for (var g : f.glyphs()) {
+                        glyphs.add(new Sdg.Glyph(g.field() == null ? null : fromSchema(g.field()), g.advance(),
+                                g.codepoints()));
+                    }
+                    fonts.add(new Sdg.Font(f.family(), f.style(), f.ascender(), f.descender(), f.lineHeight(), glyphs,
+                            f.license()));
+                }
+            }
+            return new Sdg(d.width(), d.height(), pages, fromSchema(d.layers()), fonts);
+        }
+
+        private static Sdg.Text fromSchema(String layer, dev.vexelray.fields.sdg.schema.Text t) {
+            int n = t.glyphs().size();
+            if (t.x().size() != n || t.y().size() != n) {
+                throw new IllegalArgumentException("a damaged SDG file: layer \"" + layer + "\" sets " + n
+                        + " glyphs at " + t.x().size() + " x and " + t.y().size() + " y");
+            }
+            List<Sdg.Placed> placed = new ArrayList<>(n);
+            for (int i = 0; i < n; i++) {
+                placed.add(new Sdg.Placed(t.glyphs().get(i), t.x().get(i), t.y().get(i)));
+            }
+            return new Sdg.Text(t.font(), t.size(), placed, t.string());
         }
 
         private static Sdg.Stencil fromSchema(dev.vexelray.fields.sdg.schema.Stencil s) {
@@ -330,7 +422,8 @@ public final class SdgFile {
                     }
                     default -> new Sdg.Paint.Unknown(p.kind());
                 };
-                layers.add(new Sdg.Layer(l.name(), stencil, paint, l.opacity()));
+                layers.add(l.text() != null ? Sdg.Layer.text(l.name(), l.opacity(), paint, fromSchema(l.name(), l.text()))
+                        : new Sdg.Layer(l.name(), stencil, paint, l.opacity()));
             }
             return layers;
         }

@@ -14,9 +14,11 @@ import java.util.List;
  * @param height the canvas down, in units
  * @param pages  the texels, numbered from 0
  * @param layers back to front
+ * @param fonts  since 3 (SDG 1.3): the fonts its text layers are set in, numbered from 0; absent for none
  */
-@IntrabufMessage(name = "vexelray.sdg.Drawing", major = 1, minor = 2, compat = Compat.FULL)
+@IntrabufMessage(name = "vexelray.sdg.Drawing", major = 1, minor = 3, compat = Compat.FULL)
 public record Drawing(double width, double height,
                       @Field(nonNull = true) List<Page> pages,
-                      @Field(nonNull = true) List<Layer> layers) {
+                      @Field(nonNull = true) List<Layer> layers,
+                      @Field(since = 3) List<Font> fonts) {
 }

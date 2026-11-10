@@ -38,6 +38,13 @@ final class Style {
     boolean evenOdd;
     boolean clipEvenOdd;
     boolean visible = true;
+    // text's, inherited as SVG's are; a size in user units, SVG's initial "medium" being 16
+    String fontFamily = "sans-serif";
+    double fontSize = 16;
+    int fontWeight = 400;
+    boolean italic;
+    String anchor = "start";
+    double letterSpacing;
 
     private Style() {
     }
@@ -64,6 +71,12 @@ final class Style {
         s.evenOdd = evenOdd;
         s.clipEvenOdd = clipEvenOdd;
         s.visible = visible;
+        s.fontFamily = fontFamily;
+        s.fontSize = fontSize;
+        s.fontWeight = fontWeight;
+        s.italic = italic;
+        s.anchor = anchor;
+        s.letterSpacing = letterSpacing;
         return s;
     }
 
@@ -119,7 +132,57 @@ final class Style {
         if ((v = property(e, "visibility")) != null) {
             s.visible = keyword(v, "visibility", "visible", "hidden", "collapse").equals("VISIBLE");
         }
+        if ((v = property(e, "font-family")) != null && !v.equals("inherit")) {
+            s.fontFamily = v;
+        }
+        if ((v = property(e, "font-size")) != null && !v.equals("inherit")) {
+            s.fontSize = fontSize(v, fontSize);
+        }
+        if ((v = property(e, "font-weight")) != null && !v.equals("inherit")) {
+            s.fontWeight = switch (v.toLowerCase(Locale.ROOT)) {
+                case "normal" -> 400;
+                case "bold" -> 700;
+                case "bolder" -> Math.min(900, fontWeight + 300);
+                case "lighter" -> Math.max(100, fontWeight - 300);
+                default -> {
+                    try {
+                        yield Math.clamp(Integer.parseInt(v), 1, 1000);
+                    } catch (NumberFormatException x) {
+                        throw new IllegalArgumentException("font-weight '" + v + "'");
+                    }
+                }
+            };
+        }
+        if ((v = property(e, "font-style")) != null && !v.equals("inherit")) {
+            s.italic = !keyword(v, "font-style", "normal", "italic", "oblique").equals("NORMAL");
+        }
+        if ((v = property(e, "text-anchor")) != null && !v.equals("inherit")) {
+            s.anchor = keyword(v, "text-anchor", "start", "middle", "end").toLowerCase(Locale.ROOT);
+        }
+        if ((v = property(e, "letter-spacing")) != null && !v.equals("inherit")) {
+            s.letterSpacing = v.equals("normal") ? 0 : fontSize(v, s.fontSize);
+        }
         return s;
+    }
+
+    /** A font size, or a length relative to one: {@code em} and {@code %} of the size inherited, or a length. */
+    private static double fontSize(String v, double inherited) {
+        String t = v.strip().toLowerCase(Locale.ROOT);
+        return switch (t) {
+            case "xx-small" -> 9;
+            case "x-small" -> 10;
+            case "small" -> 13;
+            case "medium" -> 16;
+            case "large" -> 18;
+            case "x-large" -> 24;
+            case "xx-large" -> 32;
+            default -> {
+                if (t.endsWith("em")) {
+                    yield Double.parseDouble(t.substring(0, t.length() - 2).strip()) * inherited;
+                }
+                yield Svg.length(t, inherited);
+            }
+        };
     }
 
     /**

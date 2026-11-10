@@ -51,6 +51,8 @@ public final class SdgRender {
         for (Sdg.Layer layer : layers) {
             if (layer.isGroup()) {
                 group(sdg, layer, px, width, height, originX, originY, unitsPerPixel);
+            } else if (layer.isText()) {
+                text(sdg, layer, px, width, height, originX, originY, unitsPerPixel);
             } else {
                 shape(sdg, layer, px, width, height, originX, originY, unitsPerPixel);
             }
@@ -140,6 +142,72 @@ public final class SdgRender {
                     px[o + 2] = colour[2] * a + px[o + 2] * keep;
                     px[o + 3] = a + px[o + 3] * keep;
                 }
+            }
+        }
+    }
+
+    /**
+     * Text (spec §2, since 1.3): each glyph's coverage as a stencil's, placed by {@link Sdg.Glyph#placed}; the layer's
+     * coverage at a pixel the greatest of them, so glyphs that overlap cover it once; then painted as a shape is.
+     */
+    private static void text(Sdg sdg, Sdg.Layer layer, float[] px, int width, int height, double originX,
+                             double originY, double unitsPerPixel) {
+        if (layer.opacity() <= 0 || layer.paint() instanceof Sdg.Paint.Unknown) {
+            return;
+        }
+        Sdg.Text t = layer.text();
+        Sdg.Font font = sdg.fonts().get(t.font());
+        float[] cover = new float[width * height];
+        int bi0 = width, bj0 = height, bi1 = 0, bj1 = 0;   // the pixels any glyph covers
+        for (Sdg.Placed p : t.glyphs()) {
+            Sdg.Glyph glyph = font.glyphs().get(p.glyph());
+            if (glyph.field() == null || !glyph.field().known()) {
+                continue;   // nothing to draw, or a kind this reader does not know: that glyph is left out
+            }
+            Sdg.Stencil s = glyph.placed(p.x(), p.y(), t.size());
+            Sdg.Page page = sdg.pages().get(s.page());
+            double cx0 = s.originX(), cy0 = s.originY();
+            double cx1 = cx0 + s.width() / s.scale(), cy1 = cy0 + s.height() / s.scale();
+            int i0 = Math.max(0, (int) Math.floor((cx0 - originX) / unitsPerPixel - 0.5));
+            int j0 = Math.max(0, (int) Math.floor((cy0 - originY) / unitsPerPixel - 0.5));
+            int i1 = Math.min(width, (int) Math.ceil((cx1 - originX) / unitsPerPixel + 0.5));
+            int j1 = Math.min(height, (int) Math.ceil((cy1 - originY) / unitsPerPixel + 0.5));
+            for (int j = j0; j < j1; j++) {
+                double cy = originY + (j + 0.5) * unitsPerPixel;
+                for (int i = i0; i < i1; i++) {
+                    double cx = originX + (i + 0.5) * unitsPerPixel;
+                    double d = distance(s, page, cx, cy);
+                    float c = (float) Math.clamp(0.5 + d / s.scale() / unitsPerPixel, 0, 1);
+                    int o = j * width + i;
+                    if (c > cover[o]) {
+                        cover[o] = c;
+                    }
+                }
+            }
+            if (i0 < i1 && j0 < j1) {
+                bi0 = Math.min(bi0, i0);
+                bj0 = Math.min(bj0, j0);
+                bi1 = Math.max(bi1, i1);
+                bj1 = Math.max(bj1, j1);
+            }
+        }
+        float[] colour = new float[4];
+        for (int j = bj0; j < bj1; j++) {
+            double cy = originY + (j + 0.5) * unitsPerPixel;
+            for (int i = bi0; i < bi1; i++) {
+                float c = cover[j * width + i];
+                if (c <= 0) {
+                    continue;
+                }
+                double cx = originX + (i + 0.5) * unitsPerPixel;
+                paint(sdg, layer.paint(), cx, cy, colour);
+                float a = c * colour[3] * layer.opacity();
+                float keep = 1 - a;
+                int o = (j * width + i) * 4;
+                px[o] = colour[0] * a + px[o] * keep;
+                px[o + 1] = colour[1] * a + px[o + 1] * keep;
+                px[o + 2] = colour[2] * a + px[o + 2] * keep;
+                px[o + 3] = a + px[o + 3] * keep;
             }
         }
     }
