@@ -4,13 +4,8 @@ import dev.vexelray.fields.art.Raster;
 import dev.vexelray.fields.art.Svg;
 import org.junit.jupiter.api.Test;
 
-import javax.imageio.ImageIO;
-import java.awt.image.BufferedImage;
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.Locale;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
@@ -124,48 +119,6 @@ class SdgTest {
         assertEquals(0, holes, "pixels see-through inside the drawing");
     }
 
-    /** Prints the comparison the README quotes, and writes the pictures to {@code target/sdg}. */
-    @Test
-    void measure() throws IOException {
-        Svg svg = Svg.parse(BADGE);
-        Raster small = svg.render(SMALL, SMALL, 4);
-        Raster truth = svg.render(LARGE, LARGE, 4);
-        Path dir = Path.of("target", "sdg");
-        Files.createDirectories(dir);
-
-        Object[][] rows = {
-                {"bilinear, the 64 px picture", bilinear(small, LARGE, LARGE), small.rgba().length},
-                {"traced, 8 colours", Trace.trace(small, Trace.Options.DEFAULT), 0},
-                {"traced, 8 colours, 2 texels a pixel", Trace.trace(small, Trace.Options.DEFAULT.withTexels(2)), 0},
-                {"traced, 4 colours", Trace.trace(small, Trace.Options.DEFAULT.withColours(4)), 0},
-                {"traced, 16 colours", Trace.trace(small, Trace.Options.DEFAULT.withColours(16)), 0},
-                {"from the SVG, 64 texels", SvgToSdg.convert(svg, SvgToSdg.Options.across(svg, SMALL)), 0},
-        };
-        System.out.printf(Locale.ROOT, "%-40s %8s %8s %8s %7s %9s %9s%n", "at 8x", "all", "edges", "flat",
-                "layers", ".sdgb", ".sdg");
-        for (Object[] row : rows) {
-            Raster drawn;
-            String layers = "", compiled, xml = "";
-            String name = ((String) row[0]).replaceAll("[^a-z0-9]+", "-");
-            if (row[1] instanceof Sdg sdg) {
-                drawn = SdgRender.render(sdg, LARGE, LARGE);
-                layers = Integer.toString(sdg.layers().size());
-                compiled = SdgFile.bytes(sdg).length + " B";
-                xml = SdgFile.xml(sdg).getBytes(StandardCharsets.UTF_8).length + " B";
-                SdgFile.writeWithPagesBeside(sdg, dir.resolve(name + ".sdg"));
-            } else {
-                drawn = (Raster) row[1];
-                compiled = png(small).length + " B png";
-            }
-            Error e = Error.of(truth, drawn);
-            System.out.printf(Locale.ROOT, "%-40s %8.2f %8.2f %8.2f %7s %9s %9s%n", row[0], e.all, e.edges, e.flat,
-                    layers, compiled, xml);
-            Files.write(dir.resolve(name + ".png"), png(drawn));
-        }
-        Files.write(dir.resolve("truth.png"), png(truth));
-        Files.write(dir.resolve("small.png"), png(small));
-    }
-
     // ------------------------------------------------------------------------------------------------ helpers
 
     /**
@@ -268,17 +221,5 @@ class SdgTest {
             }
         }
         return new Raster(width, height, out);
-    }
-
-    static byte[] png(Raster r) throws IOException {
-        BufferedImage img = new BufferedImage(r.width(), r.height(), BufferedImage.TYPE_INT_ARGB);
-        byte[] p = r.rgba();
-        for (int i = 0; i < r.width() * r.height(); i++) {
-            img.setRGB(i % r.width(), i / r.width(), (p[i * 4 + 3] & 0xFF) << 24 | (p[i * 4] & 0xFF) << 16
-                    | (p[i * 4 + 1] & 0xFF) << 8 | (p[i * 4 + 2] & 0xFF));
-        }
-        ByteArrayOutputStream out = new ByteArrayOutputStream();
-        ImageIO.write(img, "png", out);
-        return out.toByteArray();
     }
 }
