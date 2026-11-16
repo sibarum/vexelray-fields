@@ -6,7 +6,7 @@
 
     <groupId>dev.vexelray.fields</groupId>
     <artifactId>vexelray-fields</artifactId>
-    <version>0.2.0-SNAPSHOT</version>
+    <version>0.2.1-SNAPSHOT</version>
     <packaging>pom</packaging>
 
     <name>vexelray-fields</name>
@@ -60,7 +60,7 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
 
         <!-- An .sdgb file is one intrabuf payload, as a .vxa is. The same version as vexelray-codec. -->
-        <intrabuf.version>0.1.3-SNAPSHOT</intrabuf.version>
+        <intrabuf.version>0.1.4-SNAPSHOT</intrabuf.version>
         <junit.version>5.11.4</junit.version>
     </properties>
 
